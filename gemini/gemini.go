@@ -25,14 +25,29 @@ type Runner struct {
 }
 
 type jsonResponse struct {
-	SessionID string `json:"session_id"`
-	Response  string `json:"response"`
+	SessionID string    `json:"session_id"`
+	Response  string    `json:"response"`
+	Stats     jsonStats `json:"stats"`
+}
+
+type jsonStats struct {
+	Models map[string]jsonModelStats `json:"models"`
+}
+
+type jsonModelStats struct {
+	Tokens jsonTokenStats `json:"tokens"`
+}
+
+type jsonTokenStats struct {
+	Input      int64 `json:"input"`
+	Candidates int64 `json:"candidates"`
+	Cached     int64 `json:"cached"`
 }
 
 // Run is a convenience wrapper that runs without thread resumption or progress
 // callbacks.
 func (r Runner) Run(ctx context.Context, userText string) (string, error) {
-	reply, _, err := r.RunWithThreadAndProgress(ctx, "", userText, "", nil, nil)
+	reply, _, _, _, _, err := r.RunWithThreadAndProgress(ctx, "", userText, "", nil, nil)
 	return reply, err
 }
 
@@ -51,12 +66,12 @@ func (r Runner) RunWithThreadAndProgress(
 	model string,
 	env map[string]string,
 	onProgress func(step string),
-) (string, string, error) {
+) (string, string, int64, int64, int64, error) {
 	threadID = strings.TrimSpace(threadID)
 	model = strings.TrimSpace(model)
 	prompt := strings.TrimSpace(userText)
 	if prompt == "" {
-		return "", threadID, errors.New("empty prompt")
+		return "", threadID, 0, 0, 0, errors.New("empty prompt")
 	}
 
 	timeout := r.Timeout
@@ -75,15 +90,15 @@ func (r Runner) RunWithThreadAndProgress(
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", threadID, fmt.Errorf("create stdout pipe failed: %w", err)
+		return "", threadID, 0, 0, 0, fmt.Errorf("create stdout pipe failed: %w", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		return "", threadID, fmt.Errorf("create stderr pipe failed: %w", err)
+		return "", threadID, 0, 0, 0, fmt.Errorf("create stderr pipe failed: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return "", threadID, fmt.Errorf("start gemini process failed: %w", err)
+		return "", threadID, 0, 0, 0, fmt.Errorf("start gemini process failed: %w", err)
 	}
 
 	stdoutPreview := limitedBuffer{limit: 4096}
@@ -101,11 +116,12 @@ func (r Runner) RunWithThreadAndProgress(
 	<-stderrDone
 
 	detail := strings.TrimSpace(stderr.String())
+	inputTokens, cachedInputTokens, outputTokens := response.usageTotals()
 	if errors.Is(tctx.Err(), context.DeadlineExceeded) {
-		return "", threadID, errors.New("gemini timeout")
+		return "", threadID, inputTokens, cachedInputTokens, outputTokens, errors.New("gemini timeout")
 	}
 	if errors.Is(tctx.Err(), context.Canceled) {
-		return "", threadID, context.Canceled
+		return "", threadID, inputTokens, cachedInputTokens, outputTokens, context.Canceled
 	}
 	if err != nil {
 		if detail == "" {
@@ -115,13 +131,13 @@ func (r Runner) RunWithThreadAndProgress(
 			detail = detail[:400]
 		}
 		runErr := fmt.Errorf("gemini exec failed: %w (%s)", err, detail)
-		return "", threadID, decorateNodeVersionError(runErr, detail)
+		return "", threadID, inputTokens, cachedInputTokens, outputTokens, decorateNodeVersionError(runErr, detail)
 	}
 	if decodeErr != nil {
-		return "", threadID, fmt.Errorf("parse gemini json output failed: %w", decodeErr)
+		return "", threadID, inputTokens, cachedInputTokens, outputTokens, fmt.Errorf("parse gemini json output failed: %w", decodeErr)
 	}
 	if err := validateJSONResponse(response); err != nil {
-		return "", threadID, err
+		return "", threadID, inputTokens, cachedInputTokens, outputTokens, err
 	}
 
 	reply := strings.TrimSpace(response.Response)
@@ -133,7 +149,7 @@ func (r Runner) RunWithThreadAndProgress(
 	if nextThreadID == "" {
 		nextThreadID = threadID
 	}
-	return reply, nextThreadID, nil
+	return reply, nextThreadID, inputTokens, cachedInputTokens, outputTokens, nil
 }
 
 func parseJSONResponse(raw string) (jsonResponse, error) {
@@ -152,6 +168,18 @@ func validateJSONResponse(response jsonResponse) error {
 		return errors.New("gemini returned no final response")
 	}
 	return nil
+}
+
+func (r jsonResponse) usageTotals() (int64, int64, int64) {
+	var inputTokens int64
+	var cachedInputTokens int64
+	var outputTokens int64
+	for _, modelStats := range r.Stats.Models {
+		inputTokens += modelStats.Tokens.Input
+		cachedInputTokens += modelStats.Tokens.Cached
+		outputTokens += modelStats.Tokens.Candidates
+	}
+	return inputTokens, cachedInputTokens, outputTokens
 }
 
 func mergeEnv(base []string, overrides map[string]string) []string {

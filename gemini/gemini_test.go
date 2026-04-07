@@ -6,7 +6,7 @@ import (
 )
 
 func TestParseJSONResponse_Valid(t *testing.T) {
-	raw := `{"session_id":"sess-1","response":"hello"}`
+	raw := `{"session_id":"sess-1","response":"hello","stats":{"models":{"gemini-2.5-pro":{"tokens":{"input":12,"cached":3,"candidates":4}}}}}`
 	resp, err := parseJSONResponse(raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -16,6 +16,10 @@ func TestParseJSONResponse_Valid(t *testing.T) {
 	}
 	if resp.Response != "hello" {
 		t.Fatalf("expected response=hello, got %q", resp.Response)
+	}
+	inputTokens, cachedInputTokens, outputTokens := resp.usageTotals()
+	if inputTokens != 12 || cachedInputTokens != 3 || outputTokens != 4 {
+		t.Fatalf("unexpected usage totals: input=%d cached=%d output=%d", inputTokens, cachedInputTokens, outputTokens)
 	}
 }
 

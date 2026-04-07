@@ -8,14 +8,17 @@ import (
 )
 
 type parsedEvent struct {
-	SessionID      string
-	AssistantText  string
-	ToolCall       string
-	ToolNames      []string
-	ResultText     string
-	ResultErrors   []string
-	ResultIsError  bool
-	HasResultEvent bool
+	SessionID         string
+	AssistantText     string
+	ToolCall          string
+	ToolNames         []string
+	ResultText        string
+	ResultErrors      []string
+	ResultIsError     bool
+	HasResultEvent    bool
+	InputTokens       int64
+	CachedInputTokens int64
+	OutputTokens      int64
 }
 
 func ParseFinalMessage(jsonlOutput string) (string, error) {
@@ -79,15 +82,19 @@ func parseEventLine(line string) parsedEvent {
 		resultText := extractString(event, "result")
 		resultErrors := extractStringSlice(event, "errors")
 		resultIsError := extractBool(event["is_error"])
+		usagePayload, _ := event["usage"].(map[string]any)
 		if strings.TrimSpace(resultText) == "" && len(resultErrors) > 0 {
 			resultText = strings.Join(resultErrors, "\n")
 		}
 		return parsedEvent{
-			SessionID:      sessionID,
-			ResultText:     strings.TrimSpace(resultText),
-			ResultErrors:   resultErrors,
-			ResultIsError:  resultIsError,
-			HasResultEvent: true,
+			SessionID:         sessionID,
+			ResultText:        strings.TrimSpace(resultText),
+			ResultErrors:      resultErrors,
+			ResultIsError:     resultIsError,
+			HasResultEvent:    true,
+			InputTokens:       extractInt64(usagePayload, "input_tokens"),
+			CachedInputTokens: extractInt64(usagePayload, "cache_read_input_tokens"),
+			OutputTokens:      extractInt64(usagePayload, "output_tokens"),
 		}
 	default:
 		return parsedEvent{}
@@ -224,5 +231,25 @@ func extractBool(value any) bool {
 		return lower == "true" || lower == "1" || lower == "yes"
 	default:
 		return false
+	}
+}
+
+func extractInt64(payload map[string]any, key string) int64 {
+	if len(payload) == 0 {
+		return 0
+	}
+	value, ok := payload[key]
+	if !ok {
+		return 0
+	}
+	switch v := value.(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	default:
+		return 0
 	}
 }

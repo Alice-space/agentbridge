@@ -43,7 +43,7 @@ func (b *geminiBackend) Run(ctx context.Context, req RunRequest) (RunResult, err
 	if strings.TrimSpace(req.WorkspaceDir) != "" {
 		runner.WorkspaceDir = strings.TrimSpace(req.WorkspaceDir)
 	}
-	reply, nextThreadID, err := runner.RunWithThreadAndProgress(
+	reply, nextThreadID, inputTokens, cachedInputTokens, outputTokens, err := runner.RunWithThreadAndProgress(
 		ctx,
 		strings.TrimSpace(req.ThreadID),
 		req.UserText,
@@ -54,6 +54,11 @@ func (b *geminiBackend) Run(ctx context.Context, req RunRequest) (RunResult, err
 	return RunResult{
 		Reply:        reply,
 		NextThreadID: strings.TrimSpace(nextThreadID),
+		Usage: Usage{
+			InputTokens:       inputTokens,
+			CachedInputTokens: cachedInputTokens,
+			OutputTokens:      outputTokens,
+		},
 	}, err
 }
 

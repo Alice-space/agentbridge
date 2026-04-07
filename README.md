@@ -9,8 +9,8 @@ Instead of implementing LLM API clients, agentbridge drives each vendor's offici
 | Provider | CLI | Thread resume | Token usage |
 |----------|-----|:---:|:---:|
 | `codex`  | [codex](https://github.com/openai/codex) | ✓ | ✓ |
-| `claude` | [claude](https://github.com/anthropics/claude-code) | ✓ | — |
-| `gemini` | [gemini](https://github.com/google-gemini/gemini-cli) | ✓ | — |
+| `claude` | [claude](https://github.com/anthropics/claude-code) | ✓ | ✓ |
+| `gemini` | [gemini](https://github.com/google-gemini/gemini-cli) | ✓ | ✓ |
 | `kimi`   | kimi CLI | ✓ | — |
 
 ## Installation

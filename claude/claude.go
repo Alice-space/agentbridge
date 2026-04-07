@@ -26,7 +26,7 @@ type Runner struct {
 // Run is a convenience wrapper that runs without thread resumption or progress
 // callbacks.
 func (r Runner) Run(ctx context.Context, userText string) (string, error) {
-	reply, _, err := r.RunWithThreadAndProgress(ctx, "", userText, "", nil, nil)
+	reply, _, _, _, _, err := r.RunWithThreadAndProgress(ctx, "", userText, "", nil, nil)
 	return reply, err
 }
 
@@ -45,11 +45,11 @@ func (r Runner) RunWithThreadAndProgress(
 	model string,
 	env map[string]string,
 	onProgress func(step string),
-) (string, string, error) {
+) (string, string, int64, int64, int64, error) {
 	model = strings.TrimSpace(model)
 	prompt := strings.TrimSpace(userText)
 	if prompt == "" {
-		return "", "", errors.New("empty prompt")
+		return "", "", 0, 0, 0, errors.New("empty prompt")
 	}
 
 	timeout := r.Timeout
@@ -68,15 +68,15 @@ func (r Runner) RunWithThreadAndProgress(
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", "", fmt.Errorf("create stdout pipe failed: %w", err)
+		return "", "", 0, 0, 0, fmt.Errorf("create stdout pipe failed: %w", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		return "", "", fmt.Errorf("create stderr pipe failed: %w", err)
+		return "", "", 0, 0, 0, fmt.Errorf("create stderr pipe failed: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return "", "", fmt.Errorf("start claude process failed: %w", err)
+		return "", "", 0, 0, 0, fmt.Errorf("start claude process failed: %w", err)
 	}
 
 	var stderr bytes.Buffer
@@ -92,6 +92,9 @@ func (r Runner) RunWithThreadAndProgress(
 	resultMessage := ""
 	resultErrors := []string{}
 	resultIsError := false
+	var inputTokens int64
+	var cachedInputTokens int64
+	var outputTokens int64
 
 	scanner := bufio.NewScanner(stdoutPipe)
 	scanner.Buffer(make([]byte, 0, 64*1024), 5*1024*1024)
@@ -111,6 +114,9 @@ func (r Runner) RunWithThreadAndProgress(
 			}
 		}
 		if event.HasResultEvent {
+			inputTokens = event.InputTokens
+			cachedInputTokens = event.CachedInputTokens
+			outputTokens = event.OutputTokens
 			if strings.TrimSpace(event.ResultText) != "" {
 				resultMessage = strings.TrimSpace(event.ResultText)
 			}
@@ -126,22 +132,22 @@ func (r Runner) RunWithThreadAndProgress(
 		_ = cmd.Wait()
 		<-stderrDone
 		if errors.Is(tctx.Err(), context.DeadlineExceeded) {
-			return "", activeThreadID, errors.New("claude timeout")
+			return "", activeThreadID, inputTokens, cachedInputTokens, outputTokens, errors.New("claude timeout")
 		}
 		if errors.Is(tctx.Err(), context.Canceled) {
-			return "", activeThreadID, context.Canceled
+			return "", activeThreadID, inputTokens, cachedInputTokens, outputTokens, context.Canceled
 		}
-		return "", activeThreadID, fmt.Errorf("read claude output failed: %w", scanErr)
+		return "", activeThreadID, inputTokens, cachedInputTokens, outputTokens, fmt.Errorf("read claude output failed: %w", scanErr)
 	}
 
 	err = cmd.Wait()
 	<-stderrDone
 	stderrText := strings.TrimSpace(stderr.String())
 	if errors.Is(tctx.Err(), context.DeadlineExceeded) {
-		return "", activeThreadID, errors.New("claude timeout")
+		return "", activeThreadID, inputTokens, cachedInputTokens, outputTokens, errors.New("claude timeout")
 	}
 	if errors.Is(tctx.Err(), context.Canceled) {
-		return "", activeThreadID, context.Canceled
+		return "", activeThreadID, inputTokens, cachedInputTokens, outputTokens, context.Canceled
 	}
 	if err != nil {
 		detail := stderrText
@@ -151,7 +157,7 @@ func (r Runner) RunWithThreadAndProgress(
 		if len(detail) > 400 {
 			detail = detail[:400]
 		}
-		return "", activeThreadID, fmt.Errorf("claude exec failed: %w (%s)", err, detail)
+		return "", activeThreadID, inputTokens, cachedInputTokens, outputTokens, fmt.Errorf("claude exec failed: %w (%s)", err, detail)
 	}
 
 	if resultIsError {
@@ -162,7 +168,7 @@ func (r Runner) RunWithThreadAndProgress(
 		if detail == "" {
 			detail = "unknown claude error"
 		}
-		return "", activeThreadID, fmt.Errorf("claude exec failed: %s", detail)
+		return "", activeThreadID, inputTokens, cachedInputTokens, outputTokens, fmt.Errorf("claude exec failed: %s", detail)
 	}
 
 	if strings.TrimSpace(finalMessage) == "" && strings.TrimSpace(resultMessage) != "" {
@@ -171,10 +177,10 @@ func (r Runner) RunWithThreadAndProgress(
 	if finalMessage == "" {
 		message, parseErr := ParseFinalMessage(stdout.String())
 		if parseErr != nil {
-			return "", activeThreadID, parseErr
+			return "", activeThreadID, inputTokens, cachedInputTokens, outputTokens, parseErr
 		}
 		finalMessage = strings.TrimSpace(message)
 	}
 
-	return finalMessage, activeThreadID, nil
+	return finalMessage, activeThreadID, inputTokens, cachedInputTokens, outputTokens, nil
 }

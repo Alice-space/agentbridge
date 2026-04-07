@@ -13,6 +13,12 @@ type parsedEvent struct {
 	ToolCall  string
 }
 
+// Kimi CLI persists token usage in internal session files (`wire.jsonl`
+// StatusUpdate.payload.token_usage and `context.jsonl` `_usage` rows), but
+// `kimi --print --output-format stream-json` does not emit those events on
+// stdout. The installed JsonPrinter only forwards assistant messages,
+// notifications, tool results, and plan displays, so agentbridge cannot obtain
+// per-run token usage from the JSONL stream it parses here.
 func ParseFinalMessage(jsonlOutput string) (string, error) {
 	var lastAssistant string
 	scanner := bufio.NewScanner(strings.NewReader(jsonlOutput))
