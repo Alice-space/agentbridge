@@ -68,6 +68,13 @@ func (b *codexBackend) Run(ctx context.Context, req RunRequest) (RunResult, erro
 		runner.WorkspaceDir = strings.TrimSpace(req.WorkspaceDir)
 	}
 	policy := b.resolveExecPolicy(req)
+	var rawEventFn func(kind, line, detail string)
+	if req.OnRawEvent != nil {
+		fn := req.OnRawEvent
+		rawEventFn = func(kind, line, detail string) {
+			fn(RawEvent{Kind: kind, Line: line, Detail: detail})
+		}
+	}
 	reply, nextThreadID, usage, err := runner.RunWithThreadAndProgressAndUsage(
 		ctx,
 		strings.TrimSpace(req.ThreadID),
@@ -79,6 +86,7 @@ func (b *codexBackend) Run(ctx context.Context, req RunRequest) (RunResult, erro
 		strings.TrimSpace(req.Personality),
 		req.Env,
 		req.OnProgress,
+		rawEventFn,
 	)
 	return RunResult{
 		Reply:        reply,

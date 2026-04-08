@@ -15,6 +15,26 @@ import "context"
 // "[file_change] ".
 type ProgressFunc func(step string)
 
+// RawEvent is a raw backend-internal event emitted before higher-level
+// filtering. It is delivered via RunRequest.OnRawEvent when non-nil.
+type RawEvent struct {
+	// Kind identifies the event category:
+	//   "stdout_line" – every raw stdout JSON-line from the CLI
+	//   "reasoning"   – a reasoning/thinking block (codex)
+	//   "tool_call"   – a command_execution item (codex)
+	//   "tool_use"    – a tool_use block in an assistant message (claude, kimi)
+	Kind string
+	// Line is the original JSON-lines string from the CLI stdout (always set).
+	Line string
+	// Detail is a human-readable parsed summary (set for reasoning, tool_call,
+	// and tool_use; empty for stdout_line).
+	Detail string
+}
+
+// RawEventFunc is called with each raw backend-internal event. It is optional;
+// nil disables raw event delivery.
+type RawEventFunc func(event RawEvent)
+
 // Usage holds token consumption reported by the CLI backend. Fields are zero
 // when the backend does not expose usage information.
 type Usage struct {
@@ -71,6 +91,10 @@ type RunRequest struct {
 	Env map[string]string
 	// OnProgress receives streaming progress updates during execution.
 	OnProgress ProgressFunc
+	// OnRawEvent optionally receives low-level backend-internal events before
+	// any higher-level filtering is applied. See RawEvent for the delivered
+	// kinds. Nil disables raw event delivery.
+	OnRawEvent RawEventFunc
 }
 
 // RunResult is the output from Backend.Run.

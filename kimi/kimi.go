@@ -31,7 +31,7 @@ type Runner struct {
 // Run is a convenience wrapper that runs without thread resumption or progress
 // callbacks.
 func (r Runner) Run(ctx context.Context, userText string) (string, error) {
-	reply, _, err := r.RunWithThreadAndProgress(ctx, "", userText, "", nil, nil)
+	reply, _, err := r.RunWithThreadAndProgress(ctx, "", userText, "", nil, nil, nil)
 	return reply, err
 }
 
@@ -43,6 +43,8 @@ func (r Runner) Run(ctx context.Context, userText string) (string, error) {
 //   - model: overrides the CLI default when non-empty.
 //   - env: merged over the process environment.
 //   - onProgress: called with intermediate assistant messages; may be nil.
+//   - onRawEvent: optional callback for raw stdout events (kind, line, detail);
+//     nil disables raw event delivery.
 func (r Runner) RunWithThreadAndProgress(
 	ctx context.Context,
 	threadID string,
@@ -50,6 +52,7 @@ func (r Runner) RunWithThreadAndProgress(
 	model string,
 	env map[string]string,
 	onProgress func(step string),
+	onRawEvent func(kind, line, detail string),
 ) (string, string, error) {
 	requestedThreadID := strings.TrimSpace(threadID)
 	model = strings.TrimSpace(model)
@@ -106,6 +109,9 @@ func (r Runner) RunWithThreadAndProgress(
 		stdout.WriteString(line)
 		stdout.WriteByte('\n')
 
+		if onRawEvent != nil {
+			onRawEvent("stdout_line", line, "")
+		}
 		event := parseEventLine(line)
 		if strings.TrimSpace(event.SessionID) != "" {
 			activeThreadID = strings.TrimSpace(event.SessionID)
@@ -323,4 +329,3 @@ func normalizePath(path string) string {
 	}
 	return filepath.Clean(absPath)
 }
-

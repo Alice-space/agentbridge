@@ -26,7 +26,7 @@ type Runner struct {
 // Run is a convenience wrapper that runs without thread resumption or progress
 // callbacks.
 func (r Runner) Run(ctx context.Context, userText string) (string, error) {
-	reply, _, _, _, _, err := r.RunWithThreadAndProgress(ctx, "", userText, "", nil, nil)
+	reply, _, _, _, _, err := r.RunWithThreadAndProgress(ctx, "", userText, "", nil, nil, nil)
 	return reply, err
 }
 
@@ -38,6 +38,8 @@ func (r Runner) Run(ctx context.Context, userText string) (string, error) {
 //   - model: overrides the CLI default when non-empty.
 //   - env: merged over the process environment.
 //   - onProgress: called with each intermediate assistant message; may be nil.
+//   - onRawEvent: optional callback for raw stdout events (kind, line, detail);
+//     nil disables raw event delivery.
 func (r Runner) RunWithThreadAndProgress(
 	ctx context.Context,
 	threadID string,
@@ -45,6 +47,7 @@ func (r Runner) RunWithThreadAndProgress(
 	model string,
 	env map[string]string,
 	onProgress func(step string),
+	onRawEvent func(kind, line, detail string),
 ) (string, string, int64, int64, int64, error) {
 	model = strings.TrimSpace(model)
 	prompt := strings.TrimSpace(userText)
@@ -103,9 +106,15 @@ func (r Runner) RunWithThreadAndProgress(
 		stdout.WriteString(line)
 		stdout.WriteByte('\n')
 
+		if onRawEvent != nil {
+			onRawEvent("stdout_line", line, "")
+		}
 		event := parseEventLine(line)
 		if strings.TrimSpace(event.SessionID) != "" {
 			activeThreadID = strings.TrimSpace(event.SessionID)
+		}
+		if onRawEvent != nil && strings.TrimSpace(event.ToolCall) != "" {
+			onRawEvent("tool_use", line, strings.TrimSpace(event.ToolCall))
 		}
 		if strings.TrimSpace(event.AssistantText) != "" {
 			finalMessage = strings.TrimSpace(event.AssistantText)

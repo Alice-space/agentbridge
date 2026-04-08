@@ -95,7 +95,7 @@ func (r Runner) RunWithThreadAndProgress(
 	onThinking func(step string),
 ) (string, string, error) {
 	reply, nextThreadID, _, err := r.RunWithThreadAndProgressAndUsage(
-		ctx, threadID, userText, policy, model, profile, reasoningEffort, personality, env, onThinking,
+		ctx, threadID, userText, policy, model, profile, reasoningEffort, personality, env, onThinking, nil,
 	)
 	return reply, nextThreadID, err
 }
@@ -109,6 +109,8 @@ func (r Runner) RunWithThreadAndProgress(
 //   - model, profile, reasoningEffort, personality: forwarded as CLI flags.
 //   - env: merged over the process environment.
 //   - onThinking: receives intermediate messages and file-change notifications.
+//   - onRawEvent: optional callback for raw stdout events (kind, line, detail);
+//     nil disables raw event delivery.
 func (r Runner) RunWithThreadAndProgressAndUsage(
 	ctx context.Context,
 	threadID string,
@@ -120,9 +122,10 @@ func (r Runner) RunWithThreadAndProgressAndUsage(
 	personality string,
 	env map[string]string,
 	onThinking func(step string),
+	onRawEvent func(kind, line, detail string),
 ) (string, string, Usage, error) {
 	reply, nextThreadID, usage, err := r.runAttempt(
-		ctx, threadID, userText, policy, model, profile, reasoningEffort, personality, env, onThinking,
+		ctx, threadID, userText, policy, model, profile, reasoningEffort, personality, env, onThinking, onRawEvent,
 	)
 	if err == nil || !errors.Is(err, errCodexIdleTimeout) || strings.TrimSpace(nextThreadID) == "" {
 		return reply, nextThreadID, usage, err
@@ -130,7 +133,7 @@ func (r Runner) RunWithThreadAndProgressAndUsage(
 
 	// On idle timeout, retry once by resuming the thread.
 	retryReply, retryThreadID, retryUsage, retryErr := r.runAttempt(
-		ctx, nextThreadID, idleResumePrompt(), policy, model, profile, reasoningEffort, personality, env, onThinking,
+		ctx, nextThreadID, idleResumePrompt(), policy, model, profile, reasoningEffort, personality, env, onThinking, onRawEvent,
 	)
 	usage = mergeUsage(usage, retryUsage)
 	if retryErr != nil {
@@ -150,6 +153,7 @@ func (r Runner) runAttempt(
 	personality string,
 	env map[string]string,
 	onThinking func(step string),
+	onRawEvent func(kind, line, detail string),
 ) (string, string, Usage, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -301,12 +305,23 @@ loop:
 			stdout.WriteString(line)
 			stdout.WriteByte('\n')
 
+			if onRawEvent != nil {
+				onRawEvent("stdout_line", line, "")
+			}
 			reasoning, agentMessage, fileChangeMessage, parsedThreadID := parseEventLine(line)
 			if strings.TrimSpace(parsedThreadID) != "" {
 				activeThreadID = strings.TrimSpace(parsedThreadID)
 			}
 			if parsedUsage := parseUsageLine(line); parsedUsage.HasUsage() {
 				usage = parsedUsage
+			}
+			if onRawEvent != nil && strings.TrimSpace(reasoning) != "" {
+				onRawEvent("reasoning", line, strings.TrimSpace(reasoning))
+			}
+			if onRawEvent != nil {
+				if toolCall := parseToolCallLine(line); strings.TrimSpace(toolCall) != "" {
+					onRawEvent("tool_call", line, strings.TrimSpace(toolCall))
+				}
 			}
 			_ = reasoning
 			if strings.TrimSpace(fileChangeMessage) != "" {
@@ -452,4 +467,3 @@ func appendUniqueAddDir(out []string, raw string) []string {
 	}
 	return append(out, trimmed)
 }
-
