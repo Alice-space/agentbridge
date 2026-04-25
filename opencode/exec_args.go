@@ -1,8 +1,11 @@
 package opencode
 
 import (
+	"context"
 	"fmt"
+	"os/exec"
 	"strings"
+	"time"
 )
 
 func buildRunArgs(threadID, prompt, model string) []string {
@@ -19,7 +22,45 @@ func buildRunArgs(threadID, prompt, model string) []string {
 }
 
 func buildLoginCheckArgs() []string {
-	return []string{"run", "--help"}
+	return []string{"--version"}
+}
+
+type LoginReport struct {
+	Command string
+	Version string
+	Ready   bool
+	Error   string
+}
+
+func CheckLogin(command string, timeout time.Duration) (LoginReport, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = "opencode"
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, command, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		report := LoginReport{
+			Command: command,
+			Ready:   false,
+			Error:   err.Error(),
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			report.Error = string(exitErr.Stderr)
+		}
+		return report, nil
+	}
+	return LoginReport{
+		Command: command,
+		Version: strings.TrimSpace(string(output)),
+		Ready:   true,
+	}, nil
 }
 
 func formatLoginError(runErr error, stderr string) error {
