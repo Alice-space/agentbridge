@@ -7,10 +7,11 @@ import (
 )
 
 const (
-	ProviderCodex  = "codex"
-	ProviderClaude = "claude"
-	ProviderGemini = "gemini"
-	ProviderKimi   = "kimi"
+	ProviderCodex   = "codex"
+	ProviderClaude  = "claude"
+	ProviderGemini  = "gemini"
+	ProviderKimi    = "kimi"
+	ProviderOpenCode = "opencode"
 )
 
 // FactoryConfig holds configuration for all supported backends. Only the
@@ -21,6 +22,7 @@ type FactoryConfig struct {
 	Claude   ClaudeConfig
 	Gemini   GeminiConfig
 	Kimi     KimiConfig
+	OpenCode OpenCodeConfig
 }
 
 // ProfileRunnerConfig carries per-profile overrides keyed by the profile name
@@ -78,6 +80,16 @@ type KimiConfig struct {
 	ProfileOverrides map[string]ProfileRunnerConfig
 }
 
+// OpenCodeConfig configures the opencode CLI backend.
+type OpenCodeConfig struct {
+	Command      string
+	Timeout      time.Duration
+	Env          map[string]string
+	WorkspaceDir string
+	// ProfileOverrides maps profile name → per-profile runner overrides.
+	ProfileOverrides map[string]ProfileRunnerConfig
+}
+
 type providerBundle struct {
 	backend Backend
 }
@@ -103,6 +115,8 @@ func NewProvider(cfg FactoryConfig) (Provider, error) {
 		return providerBundle{backend: newGeminiBackend(cfg.Gemini)}, nil
 	case ProviderKimi:
 		return providerBundle{backend: newKimiBackend(cfg.Kimi)}, nil
+	case ProviderOpenCode:
+		return providerBundle{backend: newOpenCodeBackend(cfg.OpenCode)}, nil
 	default:
 		return nil, fmt.Errorf("unsupported llm_provider %q", provider)
 	}
