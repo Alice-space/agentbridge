@@ -14,10 +14,12 @@ type opencodeBackend struct {
 
 func newOpenCodeBackend(cfg OpenCodeConfig) *opencodeBackend {
 	defaultRunner := coreopencode.Runner{
-		Command:      cfg.Command,
-		Timeout:      cfg.Timeout,
-		Env:          cfg.Env,
-		WorkspaceDir: cfg.WorkspaceDir,
+		Command:        cfg.Command,
+		Timeout:        cfg.Timeout,
+		DefaultModel:   cfg.Model,
+		DefaultVariant: cfg.Variant,
+		Env:            cfg.Env,
+		WorkspaceDir:   cfg.WorkspaceDir,
 	}
 	profileRunners := make(map[string]coreopencode.Runner, len(cfg.ProfileOverrides))
 	for name, override := range cfg.ProfileOverrides {
@@ -48,6 +50,7 @@ func (b *opencodeBackend) Run(ctx context.Context, req RunRequest) (RunResult, e
 		strings.TrimSpace(req.ThreadID),
 		req.UserText,
 		strings.TrimSpace(req.Model),
+		strings.TrimSpace(req.Variant),
 		req.Env,
 		req.OnProgress,
 	)

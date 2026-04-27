@@ -84,6 +84,8 @@ type KimiConfig struct {
 type OpenCodeConfig struct {
 	Command      string
 	Timeout      time.Duration
+	Model        string
+	Variant      string
 	Env          map[string]string
 	WorkspaceDir string
 	// ProfileOverrides maps profile name → per-profile runner overrides.

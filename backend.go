@@ -77,6 +77,8 @@ type RunRequest struct {
 	Provider string
 	// Model overrides the default model for this request.
 	Model string
+	// Variant overrides the default variant for this request (e.g. "max", "high", "minimal").
+	Variant string
 	// Profile selects a named configuration profile defined in the backend config.
 	Profile string
 	// ReasoningEffort is forwarded to backends that support it (codex).

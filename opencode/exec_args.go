@@ -8,10 +8,13 @@ import (
 	"time"
 )
 
-func buildRunArgs(threadID, prompt, model string) []string {
+func buildRunArgs(threadID, prompt, model, variant string) []string {
 	args := []string{"run"}
 	if model = strings.TrimSpace(model); model != "" {
 		args = append(args, "--model", model)
+	}
+	if variant = strings.TrimSpace(variant); variant != "" {
+		args = append(args, "--variant", variant)
 	}
 	args = append(args, "--format", "json")
 	if threadID = strings.TrimSpace(threadID); threadID != "" {

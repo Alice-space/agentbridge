@@ -19,10 +19,12 @@ import (
 
 // Runner executes the opencode CLI for a single request.
 type Runner struct {
-	Command      string
-	Timeout      time.Duration
-	Env          map[string]string
-	WorkspaceDir string
+	Command        string
+	Timeout        time.Duration
+	DefaultModel   string
+	DefaultVariant string
+	Env            map[string]string
+	WorkspaceDir   string
 }
 
 type stepStart struct {
@@ -56,9 +58,9 @@ type stepFinish struct {
 }
 
 // Run is a convenience wrapper that runs without thread resumption or progress
-// callbacks.
+// callbacks. It uses the runner's DefaultModel and DefaultVariant when set.
 func (r Runner) Run(ctx context.Context, userText string) (string, error) {
-	reply, _, _, _, _, err := r.RunWithThreadAndProgress(ctx, "", userText, "", nil, nil)
+	reply, _, _, _, _, err := r.RunWithThreadAndProgress(ctx, "", userText, r.DefaultModel, r.DefaultVariant, nil, nil)
 	return reply, err
 }
 
@@ -68,6 +70,7 @@ func (r Runner) Run(ctx context.Context, userText string) (string, error) {
 //   - threadID: resume an existing session when non-empty.
 //   - userText: the fully assembled prompt.
 //   - model: the provider/model string (e.g. "deepseek/deepseek-v4-pro").
+//   - variant: the model variant (e.g. "max", "high", "minimal").
 //   - env: merged over the process environment.
 //   - onProgress: called with each streaming text chunk; may be nil.
 func (r Runner) RunWithThreadAndProgress(
@@ -75,12 +78,22 @@ func (r Runner) RunWithThreadAndProgress(
 	threadID string,
 	userText string,
 	model string,
+	variant string,
 	env map[string]string,
 	onProgress func(step string),
 ) (string, string, int64, int64, int64, error) {
 	prompt := strings.TrimSpace(userText)
 	if prompt == "" {
 		return "", "", 0, 0, 0, errors.New("empty prompt")
+	}
+
+	model = strings.TrimSpace(model)
+	variant = strings.TrimSpace(variant)
+	if model == "" {
+		model = strings.TrimSpace(r.DefaultModel)
+	}
+	if variant == "" {
+		variant = strings.TrimSpace(r.DefaultVariant)
 	}
 
 	timeout := r.Timeout
@@ -90,7 +103,7 @@ func (r Runner) RunWithThreadAndProgress(
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmdArgs := buildRunArgs(threadID, prompt, model)
+	cmdArgs := buildRunArgs(threadID, prompt, model, variant)
 	cmd := exec.CommandContext(tctx, r.Command, cmdArgs...)
 	if strings.TrimSpace(r.WorkspaceDir) != "" {
 		cmd.Dir = r.WorkspaceDir
@@ -123,9 +136,9 @@ func (r Runner) RunWithThreadAndProgress(
 		inputTokens   int64
 		outputTokens  int64
 		cacheTokens   int64
-		allText       []string
 	)
 
+	var cumulativeText strings.Builder
 	scanner := bufio.NewScanner(stdoutPipe)
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	for scanner.Scan() {
@@ -133,18 +146,16 @@ func (r Runner) RunWithThreadAndProgress(
 		if len(line) == 0 {
 			continue
 		}
-		parsed := parseOpenCodeLine(line, &inputTokens, &outputTokens, &cacheTokens, &nextThreadID, &allText)
+		parsed := parseOpenCodeLine(line, &inputTokens, &outputTokens, &cacheTokens, &nextThreadID, &cumulativeText)
 		if parsed != "" && onProgress != nil {
-			onProgress(parsed)
+			onProgress(cumulativeText.String())
 		}
 	}
 
+	reply = strings.TrimSpace(cumulativeText.String())
+
 	err = cmd.Wait()
 	<-stderrDone
-
-	if len(allText) > 0 {
-		reply = strings.TrimSpace(strings.Join(allText, "\n"))
-	}
 
 	cachedInputTokens := cacheTokens
 
@@ -157,7 +168,7 @@ func (r Runner) RunWithThreadAndProgress(
 	}
 	if err != nil {
 		if detail == "" {
-			detail = strings.TrimSpace(strings.Join(allText, " "))
+			detail = strings.TrimSpace(cumulativeText.String())
 		}
 		if len(detail) > 400 {
 			detail = detail[:400]
@@ -166,13 +177,20 @@ func (r Runner) RunWithThreadAndProgress(
 		return "", nextThreadID, inputTokens, outputTokens, cachedInputTokens, formatLoginError(runErr, detail)
 	}
 	if reply == "" {
+		errDetail := strings.TrimSpace(stderr.String())
+		if errDetail != "" {
+			if len(errDetail) > 400 {
+				errDetail = errDetail[:400]
+			}
+			return "", nextThreadID, inputTokens, outputTokens, cachedInputTokens, fmt.Errorf("opencode returned no response text (stderr: %s)", errDetail)
+		}
 		return "", nextThreadID, inputTokens, outputTokens, cachedInputTokens, errors.New("opencode returned no response text")
 	}
 
 	return reply, nextThreadID, inputTokens, outputTokens, cachedInputTokens, nil
 }
 
-func parseOpenCodeLine(line []byte, inputTokens, outputTokens, cacheTokens *int64, nextThreadID *string, allText *[]string) string {
+func parseOpenCodeLine(line []byte, inputTokens, outputTokens, cacheTokens *int64, nextThreadID *string, cumulativeText *strings.Builder) string {
 	raw := json.RawMessage(line)
 	var peek struct {
 		Type string `json:"type"`
@@ -198,7 +216,10 @@ func parseOpenCodeLine(line []byte, inputTokens, outputTokens, cacheTokens *int6
 		}
 		text := strings.TrimSpace(ev.Part.Text)
 		if text != "" {
-			*allText = append(*allText, text)
+			if cumulativeText.Len() > 0 {
+				cumulativeText.WriteByte('\n')
+			}
+			cumulativeText.WriteString(text)
 			return text
 		}
 		return ""
