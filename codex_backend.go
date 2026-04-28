@@ -54,16 +54,7 @@ func newCodexBackend(cfg CodexConfig) *codexBackend {
 }
 
 func (b *codexBackend) Run(ctx context.Context, req RunRequest) (RunResult, error) {
-	runner := b.runner
-	providerProfile := strings.TrimSpace(req.Profile)
-	if profile := strings.TrimSpace(req.Profile); profile != "" {
-		if r, ok := b.profileRunners[profile]; ok {
-			runner = r
-			if resolved := strings.TrimSpace(b.providerProfiles[profile]); resolved != "" {
-				providerProfile = resolved
-			}
-		}
-	}
+	runner, providerProfile := b.resolveRunnerAndProviderProfile(req.Profile)
 	if strings.TrimSpace(req.WorkspaceDir) != "" {
 		runner.WorkspaceDir = strings.TrimSpace(req.WorkspaceDir)
 	}
@@ -97,6 +88,18 @@ func (b *codexBackend) Run(ctx context.Context, req RunRequest) (RunResult, erro
 			OutputTokens:      usage.OutputTokens,
 		},
 	}, err
+}
+
+func (b *codexBackend) resolveRunnerAndProviderProfile(reqProfile string) (corecodex.Runner, string) {
+	runner := b.runner
+	profile := strings.TrimSpace(reqProfile)
+	if profile == "" {
+		return runner, ""
+	}
+	if r, ok := b.profileRunners[profile]; ok {
+		return r, strings.TrimSpace(b.providerProfiles[profile])
+	}
+	return runner, profile
 }
 
 func (b *codexBackend) resolveExecPolicy(req RunRequest) corecodex.ExecPolicyConfig {
