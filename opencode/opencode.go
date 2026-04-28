@@ -72,7 +72,7 @@ func (r Runner) Run(ctx context.Context, userText string) (string, error) {
 //   - model: the provider/model string (e.g. "deepseek/deepseek-v4-pro").
 //   - variant: the model variant (e.g. "max", "high", "minimal").
 //   - env: merged over the process environment.
-//   - onProgress: called with each streaming text chunk; may be nil.
+//   - onProgress: called with each text event as an independent agent message; may be nil.
 func (r Runner) RunWithThreadAndProgress(
 	ctx context.Context,
 	threadID string,
@@ -131,14 +131,14 @@ func (r Runner) RunWithThreadAndProgress(
 	}()
 
 	var (
-		reply         string
-		nextThreadID  string
-		inputTokens   int64
-		outputTokens  int64
-		cacheTokens   int64
+		reply        string
+		nextThreadID string
+		inputTokens  int64
+		outputTokens int64
+		cacheTokens  int64
 	)
 
-	var cumulativeText strings.Builder
+	finalText := ""
 	scanner := bufio.NewScanner(stdoutPipe)
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	for scanner.Scan() {
@@ -146,13 +146,13 @@ func (r Runner) RunWithThreadAndProgress(
 		if len(line) == 0 {
 			continue
 		}
-		parsed := parseOpenCodeLine(line, &inputTokens, &outputTokens, &cacheTokens, &nextThreadID, &cumulativeText)
+		parsed := parseOpenCodeLine(line, &inputTokens, &outputTokens, &cacheTokens, &nextThreadID, &finalText)
 		if parsed != "" && onProgress != nil {
-			onProgress(cumulativeText.String())
+			onProgress(parsed)
 		}
 	}
 
-	reply = strings.TrimSpace(cumulativeText.String())
+	reply = strings.TrimSpace(finalText)
 
 	err = cmd.Wait()
 	<-stderrDone
@@ -168,7 +168,7 @@ func (r Runner) RunWithThreadAndProgress(
 	}
 	if err != nil {
 		if detail == "" {
-			detail = strings.TrimSpace(cumulativeText.String())
+			detail = strings.TrimSpace(finalText)
 		}
 		if len(detail) > 400 {
 			detail = detail[:400]
@@ -190,8 +190,7 @@ func (r Runner) RunWithThreadAndProgress(
 	return reply, nextThreadID, inputTokens, outputTokens, cachedInputTokens, nil
 }
 
-func parseOpenCodeLine(line []byte, inputTokens, outputTokens, cacheTokens *int64, nextThreadID *string, cumulativeText *strings.Builder) string {
-	raw := json.RawMessage(line)
+func parseOpenCodeLine(line []byte, inputTokens, outputTokens, cacheTokens *int64, nextThreadID *string, finalText *string) string {
 	var peek struct {
 		Type string `json:"type"`
 	}
@@ -216,10 +215,7 @@ func parseOpenCodeLine(line []byte, inputTokens, outputTokens, cacheTokens *int6
 		}
 		text := strings.TrimSpace(ev.Part.Text)
 		if text != "" {
-			if cumulativeText.Len() > 0 {
-				cumulativeText.WriteByte('\n')
-			}
-			cumulativeText.WriteString(text)
+			*finalText = text
 			return text
 		}
 		return ""
@@ -231,10 +227,12 @@ func parseOpenCodeLine(line []byte, inputTokens, outputTokens, cacheTokens *int6
 		*inputTokens = ev.Part.Tokens.Input
 		*outputTokens = ev.Part.Tokens.Output
 		*cacheTokens = ev.Part.Tokens.CacheRead
+		if *cacheTokens == 0 {
+			*cacheTokens = ev.Part.Tokens.Cache.Read
+		}
 		return ""
 	}
 
-	_ = raw
 	return ""
 }
 
