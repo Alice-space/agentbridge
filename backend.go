@@ -11,8 +11,8 @@ package agentbridge
 import "context"
 
 // ProgressFunc is called with intermediate agent messages while a run is in
-// progress. For codex it also receives file-change notifications prefixed with
-// "[file_change] ".
+// progress. Code-editing backends may also emit file-change notifications
+// prefixed with "[file_change] ".
 type ProgressFunc func(step string)
 
 // RawEvent is a raw backend-internal event emitted before higher-level
@@ -22,7 +22,7 @@ type RawEvent struct {
 	//   "stdout_line" – every raw stdout JSON-line from the CLI
 	//   "reasoning"   – a reasoning/thinking block (codex)
 	//   "tool_call"   – a command_execution item (codex)
-	//   "tool_use"    – a tool_use block in an assistant message (claude, kimi)
+	//   "tool_use"    – a tool/tool_use block in an assistant message (claude, kimi, opencode)
 	Kind string
 	// Line is the original JSON-lines string from the CLI stdout (always set).
 	Line string

@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -35,6 +36,7 @@ printf '%s\n' '{"type":"step_finish","part":{"tokens":{"input":12,"output":6,"ca
 		func(step string) {
 			progress = append(progress, step)
 		},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("RunWithThreadAndProgress returned error: %v", err)
@@ -51,6 +53,100 @@ printf '%s\n' '{"type":"step_finish","part":{"tokens":{"input":12,"output":6,"ca
 	}
 	if inputTokens != 12 || outputTokens != 6 || cacheTokens != 4 {
 		t.Fatalf("tokens = input:%d output:%d cache:%d, want input:12 output:6 cache:4", inputTokens, outputTokens, cacheTokens)
+	}
+}
+
+func TestRunWithThreadAndProgressEmitsSyntheticFileChanges(t *testing.T) {
+	repo := initOpenCodeGitRepo(t)
+	command := filepath.Join(t.TempDir(), "opencode")
+	script := `#!/bin/sh
+printf '%s\n' 'hello' > edited.txt
+printf '%s\n' '{"type":"text","part":{"text":"DONE"}}'
+`
+	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake opencode command: %v", err)
+	}
+
+	var progress []string
+	reply, _, _, _, _, err := Runner{Command: command, WorkspaceDir: repo}.RunWithThreadAndProgress(
+		context.Background(),
+		"",
+		"prompt",
+		"",
+		"",
+		nil,
+		func(step string) {
+			progress = append(progress, step)
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("RunWithThreadAndProgress returned error: %v", err)
+	}
+	if reply != "DONE" {
+		t.Fatalf("reply = %q, want DONE", reply)
+	}
+	if len(progress) < 2 || !strings.HasPrefix(progress[0], "[file_change] ") || !strings.Contains(progress[0], "edited.txt") {
+		t.Fatalf("expected first progress event to be synthetic file change, got %#v", progress)
+	}
+	if progress[len(progress)-1] != "DONE" {
+		t.Fatalf("expected final progress to be DONE, got %#v", progress)
+	}
+}
+
+func initOpenCodeGitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	cmd := exec.Command("git", "-C", repo, "init")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return repo
+}
+
+func TestRunWithThreadAndProgressEmitsRawEvents(t *testing.T) {
+	dir := t.TempDir()
+	command := filepath.Join(dir, "opencode")
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"step_start","sessionID":"ses_test"}'
+printf '%s\n' '{"type":"reasoning","part":{"text":"thinking"}}'
+printf '%s\n' '{"type":"tool_use","part":{"tool":"bash","callID":"call_1","state":{"status":"completed","input":{"command":"pwd"}}}}'
+printf '%s\n' '{"type":"text","part":{"text":"OK"}}'
+`
+	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake opencode command: %v", err)
+	}
+
+	var raw []string
+	_, _, _, _, _, err := Runner{Command: command}.RunWithThreadAndProgress(
+		context.Background(),
+		"",
+		"prompt",
+		"",
+		"",
+		nil,
+		nil,
+		func(kind, _, detail string) {
+			if detail != "" {
+				raw = append(raw, kind+":"+detail)
+				return
+			}
+			raw = append(raw, kind)
+		},
+	)
+	if err != nil {
+		t.Fatalf("RunWithThreadAndProgress returned error: %v", err)
+	}
+
+	if want := []string{
+		"stdout_line",
+		"stdout_line",
+		"reasoning:thinking",
+		"stdout_line",
+		"tool_use:tool_use tool=`bash` call_id=`call_1` status=`completed` command=`pwd`",
+		"stdout_line",
+	}; !reflect.DeepEqual(raw, want) {
+		t.Fatalf("raw events = %#v, want %#v", raw, want)
 	}
 }
 

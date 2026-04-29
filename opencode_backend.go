@@ -45,6 +45,13 @@ func (b *opencodeBackend) Run(ctx context.Context, req RunRequest) (RunResult, e
 	if strings.TrimSpace(req.WorkspaceDir) != "" {
 		runner.WorkspaceDir = strings.TrimSpace(req.WorkspaceDir)
 	}
+	var rawEventFn func(kind, line, detail string)
+	if req.OnRawEvent != nil {
+		fn := req.OnRawEvent
+		rawEventFn = func(kind, line, detail string) {
+			fn(RawEvent{Kind: kind, Line: line, Detail: detail})
+		}
+	}
 	reply, nextThreadID, inputTokens, cachedInputTokens, outputTokens, err := runner.RunWithThreadAndProgress(
 		ctx,
 		strings.TrimSpace(req.ThreadID),
@@ -53,6 +60,7 @@ func (b *opencodeBackend) Run(ctx context.Context, req RunRequest) (RunResult, e
 		strings.TrimSpace(req.Variant),
 		req.Env,
 		req.OnProgress,
+		rawEventFn,
 	)
 	return RunResult{
 		Reply:        reply,

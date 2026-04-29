@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Alice-space/agentbridge/internal/repodiff"
 )
 
 // Runner executes the kimi CLI for a single request.
@@ -77,6 +79,8 @@ func (r Runner) RunWithThreadAndProgress(
 		cmd.Dir = workDir
 	}
 	cmd.Env = mergeEnv(mergeEnv(os.Environ(), r.Env), env)
+	diffEmitter := repodiff.NewEmitter(tctx, cmd.Dir, onProgress)
+	defer diffEmitter.Close()
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -112,9 +116,13 @@ func (r Runner) RunWithThreadAndProgress(
 		if onRawEvent != nil {
 			onRawEvent("stdout_line", line, "")
 		}
+		diffEmitter.Emit()
 		event := parseEventLine(line)
 		if strings.TrimSpace(event.SessionID) != "" {
 			activeThreadID = strings.TrimSpace(event.SessionID)
+		}
+		if onRawEvent != nil && strings.TrimSpace(event.ToolCall) != "" {
+			onRawEvent("tool_use", line, strings.TrimSpace(event.ToolCall))
 		}
 		if strings.TrimSpace(event.Text) != "" {
 			finalMessage = strings.TrimSpace(event.Text)
@@ -136,6 +144,7 @@ func (r Runner) RunWithThreadAndProgress(
 
 	err = cmd.Wait()
 	<-stderrDone
+	diffEmitter.Emit()
 	if strings.TrimSpace(activeThreadID) == "" {
 		activeThreadID = r.discoverThreadID(workDir, sessionEnv)
 	}

@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Alice-space/agentbridge/internal/repodiff"
 )
 
 // Runner executes the claude CLI for a single request.
@@ -68,6 +70,8 @@ func (r Runner) RunWithThreadAndProgress(
 		cmd.Dir = r.WorkspaceDir
 	}
 	cmd.Env = mergeEnv(mergeEnv(os.Environ(), r.Env), env)
+	diffEmitter := repodiff.NewEmitter(tctx, cmd.Dir, onProgress)
+	defer diffEmitter.Close()
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -109,6 +113,7 @@ func (r Runner) RunWithThreadAndProgress(
 		if onRawEvent != nil {
 			onRawEvent("stdout_line", line, "")
 		}
+		diffEmitter.Emit()
 		event := parseEventLine(line)
 		if strings.TrimSpace(event.SessionID) != "" {
 			activeThreadID = strings.TrimSpace(event.SessionID)
@@ -151,6 +156,7 @@ func (r Runner) RunWithThreadAndProgress(
 
 	err = cmd.Wait()
 	<-stderrDone
+	diffEmitter.Emit()
 	stderrText := strings.TrimSpace(stderr.String())
 	if errors.Is(tctx.Err(), context.DeadlineExceeded) {
 		return "", activeThreadID, inputTokens, cachedInputTokens, outputTokens, errors.New("claude timeout")

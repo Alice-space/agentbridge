@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Alice-space/agentbridge/internal/repodiff"
 )
 
 // Runner executes the opencode CLI for a single request.
@@ -60,7 +62,7 @@ type stepFinish struct {
 // Run is a convenience wrapper that runs without thread resumption or progress
 // callbacks. It uses the runner's DefaultModel and DefaultVariant when set.
 func (r Runner) Run(ctx context.Context, userText string) (string, error) {
-	reply, _, _, _, _, err := r.RunWithThreadAndProgress(ctx, "", userText, r.DefaultModel, r.DefaultVariant, nil, nil)
+	reply, _, _, _, _, err := r.RunWithThreadAndProgress(ctx, "", userText, r.DefaultModel, r.DefaultVariant, nil, nil, nil)
 	return reply, err
 }
 
@@ -73,6 +75,8 @@ func (r Runner) Run(ctx context.Context, userText string) (string, error) {
 //   - variant: the model variant (e.g. "max", "high", "minimal").
 //   - env: merged over the process environment.
 //   - onProgress: called with each text event as an independent agent message; may be nil.
+//   - onRawEvent: optional callback for raw stdout events (kind, line, detail);
+//     nil disables raw event delivery.
 func (r Runner) RunWithThreadAndProgress(
 	ctx context.Context,
 	threadID string,
@@ -81,6 +85,7 @@ func (r Runner) RunWithThreadAndProgress(
 	variant string,
 	env map[string]string,
 	onProgress func(step string),
+	onRawEvent func(kind, line, detail string),
 ) (string, string, int64, int64, int64, error) {
 	prompt := strings.TrimSpace(userText)
 	if prompt == "" {
@@ -109,6 +114,8 @@ func (r Runner) RunWithThreadAndProgress(
 		cmd.Dir = r.WorkspaceDir
 	}
 	cmd.Env = mergeEnv(mergeEnv(os.Environ(), r.Env), env)
+	diffEmitter := repodiff.NewEmitter(tctx, cmd.Dir, onProgress)
+	defer diffEmitter.Close()
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -146,6 +153,14 @@ func (r Runner) RunWithThreadAndProgress(
 		if len(line) == 0 {
 			continue
 		}
+		lineText := string(line)
+		if onRawEvent != nil {
+			onRawEvent("stdout_line", lineText, "")
+			if kind, detail := parseOpenCodeRawEvent(line); kind != "" {
+				onRawEvent(kind, lineText, detail)
+			}
+		}
+		diffEmitter.Emit()
 		parsed := parseOpenCodeLine(line, &inputTokens, &outputTokens, &cacheTokens, &nextThreadID, &finalText)
 		if parsed != "" && onProgress != nil {
 			onProgress(parsed)
@@ -156,6 +171,7 @@ func (r Runner) RunWithThreadAndProgress(
 
 	err = cmd.Wait()
 	<-stderrDone
+	diffEmitter.Emit()
 
 	cachedInputTokens := cacheTokens
 
@@ -188,6 +204,63 @@ func (r Runner) RunWithThreadAndProgress(
 	}
 
 	return reply, nextThreadID, inputTokens, outputTokens, cachedInputTokens, nil
+}
+
+func parseOpenCodeRawEvent(line []byte) (string, string) {
+	var ev map[string]any
+	if err := json.Unmarshal(line, &ev); err != nil {
+		return "", ""
+	}
+	eventType := strings.ToLower(strings.TrimSpace(extractOpenCodeString(ev, "type")))
+	part, _ := ev["part"].(map[string]any)
+	switch eventType {
+	case "reasoning":
+		return "reasoning", strings.TrimSpace(extractOpenCodeString(part, "text"))
+	case "tool_use":
+		detail := formatOpenCodeToolUse(part)
+		if strings.TrimSpace(detail) == "" {
+			return "tool_use", "tool_use"
+		}
+		return "tool_use", detail
+	default:
+		return "", ""
+	}
+}
+
+func formatOpenCodeToolUse(part map[string]any) string {
+	if len(part) == 0 {
+		return ""
+	}
+	state, _ := part["state"].(map[string]any)
+	input, _ := state["input"].(map[string]any)
+	parts := []string{"tool_use"}
+	if tool := strings.TrimSpace(extractOpenCodeString(part, "tool")); tool != "" {
+		parts = append(parts, "tool=`"+tool+"`")
+	}
+	if callID := strings.TrimSpace(extractOpenCodeString(part, "callID")); callID != "" {
+		parts = append(parts, "call_id=`"+callID+"`")
+	}
+	if status := strings.TrimSpace(extractOpenCodeString(state, "status")); status != "" {
+		parts = append(parts, "status=`"+status+"`")
+	}
+	if command := strings.TrimSpace(extractOpenCodeString(input, "command")); command != "" {
+		parts = append(parts, "command=`"+command+"`")
+	}
+	return strings.Join(parts, " ")
+}
+
+func extractOpenCodeString(m map[string]any, key string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	raw, ok := m[key]
+	if !ok || raw == nil {
+		return ""
+	}
+	if value, ok := raw.(string); ok {
+		return value
+	}
+	return ""
 }
 
 func parseOpenCodeLine(line []byte, inputTokens, outputTokens, cacheTokens *int64, nextThreadID *string, finalText *string) string {
