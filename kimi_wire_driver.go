@@ -18,6 +18,8 @@ type kimiWireDriver struct {
 	activeID string
 	nextID   atomic.Uint64
 	mu       sync.Mutex
+
+	pendingAssistantParts []string
 }
 
 func newKimiWireDriver(cfg KimiConfig) *kimiWireDriver {
@@ -146,24 +148,22 @@ func (d *kimiWireDriver) runPrompt(turnID string, req RunRequest) {
 
 func (d *kimiWireDriver) forwardKimiNotifications(client *lineRPCClient) {
 	for note := range client.Notifications() {
-		event, ok := d.parseKimiNotification(note)
-		if !ok {
-			continue
+		for _, event := range d.parseKimiNotification(note) {
+			d.events <- event
 		}
-		d.events <- event
 	}
 }
 
-func (d *kimiWireDriver) parseKimiNotification(note rpcNotification) (TurnEvent, bool) {
+func (d *kimiWireDriver) parseKimiNotification(note rpcNotification) []TurnEvent {
 	if note.Method != "event" {
-		return TurnEvent{}, false
+		return nil
 	}
 	var params struct {
 		Type    string         `json:"type"`
 		Payload map[string]any `json:"payload"`
 	}
 	if err := json.Unmarshal(note.Params, &params); err != nil {
-		return TurnEvent{}, false
+		return nil
 	}
 	d.mu.Lock()
 	threadID := d.threadID
@@ -172,34 +172,67 @@ func (d *kimiWireDriver) parseKimiNotification(note rpcNotification) (TurnEvent,
 	base := TurnEvent{Provider: ProviderKimi, ThreadID: threadID, TurnID: turnID, Raw: note.Raw}
 	switch params.Type {
 	case "TurnBegin":
+		d.clearPendingKimiAssistantText()
 		base.Kind = TurnEventStarted
 		base.Text = kimiInputText(params.Payload["user_input"])
-		return base, true
+		return []TurnEvent{base}
 	case "TurnEnd":
+		events := make([]TurnEvent, 0, 2)
+		if text := d.popPendingKimiAssistantText(); strings.TrimSpace(text) != "" {
+			textEvent := base
+			textEvent.Kind = TurnEventAssistantText
+			textEvent.Text = text
+			events = append(events, textEvent)
+		}
 		base.Kind = TurnEventCompleted
 		if status := stringFromMap(params.Payload, "status"); status == "cancelled" {
 			base.Kind = TurnEventInterrupted
 		}
-		return base, true
+		events = append(events, base)
+		return events
 	case "ContentPart":
-		base.Kind = TurnEventAssistantText
-		base.Text = kimiContentText(params.Payload)
-		return base, strings.TrimSpace(base.Text) != ""
+		if text := kimiContentText(params.Payload); strings.TrimSpace(text) != "" {
+			d.appendPendingKimiAssistantText(text)
+		}
+		return nil
 	case "ToolCall", "ToolCallPart", "ToolResult":
 		base.Kind = TurnEventToolUse
 		base.Text = kimiToolText(params.Type, params.Payload)
-		return base, true
+		return []TurnEvent{base}
 	case "SteerInput":
 		base.Kind = TurnEventSteerConsumed
 		base.Text = kimiInputText(params.Payload["user_input"])
-		return base, true
+		return []TurnEvent{base}
 	case "PlanDisplay":
 		base.Kind = TurnEventReasoning
 		base.Text = stringFromMap(params.Payload, "content")
-		return base, strings.TrimSpace(base.Text) != ""
+		if strings.TrimSpace(base.Text) == "" {
+			return nil
+		}
+		return []TurnEvent{base}
 	default:
-		return TurnEvent{}, false
+		return nil
 	}
+}
+
+func (d *kimiWireDriver) appendPendingKimiAssistantText(text string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.pendingAssistantParts = append(d.pendingAssistantParts, text)
+}
+
+func (d *kimiWireDriver) popPendingKimiAssistantText() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	text := strings.Join(d.pendingAssistantParts, "")
+	d.pendingAssistantParts = nil
+	return text
+}
+
+func (d *kimiWireDriver) clearPendingKimiAssistantText() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.pendingAssistantParts = nil
 }
 
 func kimiDefaultServerRequestHandler(r rpcRequest) any {

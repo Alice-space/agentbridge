@@ -217,7 +217,7 @@ func parseCodexNotification(note rpcNotification) (TurnEvent, bool) {
 		}
 		return TurnEvent{Provider: ProviderCodex, ThreadID: threadID, TurnID: turnID, Kind: TurnEventStarted, Raw: note.Raw}, true
 	case "item/agentMessage/delta":
-		return TurnEvent{Provider: ProviderCodex, ThreadID: threadID, TurnID: turnID, Kind: TurnEventAssistantText, Text: stringFromMap(params, "delta"), Raw: note.Raw}, true
+		return TurnEvent{}, false
 	case "item/completed":
 		item, _ := params["item"].(map[string]any)
 		switch stringFromMap(item, "type") {

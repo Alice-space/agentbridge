@@ -28,7 +28,9 @@ const (
 type TurnEventKind string
 
 const (
-	TurnEventStarted       TurnEventKind = "turn_started"
+	TurnEventStarted TurnEventKind = "turn_started"
+	// TurnEventAssistantText contains a complete assistant message. Providers
+	// that stream chunks coalesce them before emitting this normalized event.
 	TurnEventAssistantText TurnEventKind = "assistant_text"
 	TurnEventReasoning     TurnEventKind = "reasoning"
 	TurnEventToolUse       TurnEventKind = "tool_use"
