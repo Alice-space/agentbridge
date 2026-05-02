@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	corecodex "github.com/Alice-space/agentbridge/codex"
+	corecodex "github.com/Alice-space/agentbridge/providers/codex"
 )
 
 type codexBackend struct {

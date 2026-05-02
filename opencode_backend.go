@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	coreopencode "github.com/Alice-space/agentbridge/opencode"
+	coreopencode "github.com/Alice-space/agentbridge/providers/opencode"
 )
 
 type opencodeBackend struct {

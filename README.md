@@ -12,6 +12,7 @@ Instead of implementing LLM API clients, agentbridge drives each vendor's offici
 | `claude` | [claude](https://github.com/anthropics/claude-code) | ✓ | ✓ |
 | `gemini` | [gemini](https://github.com/google-gemini/gemini-cli) | ✓ | ✓ |
 | `kimi`   | kimi CLI | ✓ | — |
+| `opencode` | [opencode](https://github.com/sst/opencode) | ✓ | ✓ |
 
 ## Installation
 
@@ -20,6 +21,12 @@ go get github.com/Alice-space/agentbridge
 ```
 
 **Zero external dependencies.** Only the Go standard library is required.
+
+## Repository Layout
+
+- Root package: public facade (`Backend`, `RunRequest`, factory config, multi-backend routing, interactive sessions).
+- `providers/<name>`: provider-specific CLI runners and parsers used by the root facade.
+- `internal/`: shared implementation helpers that are not part of the public API.
 
 ## Quick Start
 

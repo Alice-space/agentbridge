@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	coreclaude "github.com/Alice-space/agentbridge/claude"
+	coreclaude "github.com/Alice-space/agentbridge/providers/claude"
 )
 
 type claudeBackend struct {

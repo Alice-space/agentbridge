@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	corekimi "github.com/Alice-space/agentbridge/kimi"
+	corekimi "github.com/Alice-space/agentbridge/providers/kimi"
 )
 
 type kimiBackend struct {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	coregemini "github.com/Alice-space/agentbridge/gemini"
+	coregemini "github.com/Alice-space/agentbridge/providers/gemini"
 )
 
 type geminiBackend struct {
