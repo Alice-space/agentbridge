@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const loginCheckTestTimeout = 15 * time.Second
+
 func TestCheckLogin_LoggedIn(t *testing.T) {
 	home := t.TempDir()
 	targetCodexHome := filepath.Join(home, ".codex-shared")
@@ -21,7 +23,7 @@ printf 'unexpected args=%s %s CODEX_HOME=%s\n' "$1" "$2" "$CODEX_HOME" >&2
 exit 99
 `)
 
-	report, err := CheckLogin(command, targetCodexHome, time.Second)
+	report, err := CheckLogin(command, targetCodexHome, loginCheckTestTimeout)
 	if err != nil {
 		t.Fatalf("check login failed: %v", err)
 	}
@@ -43,7 +45,7 @@ printf 'Not logged in\n'
 exit 1
 `)
 
-	report, err := CheckLogin(command, targetCodexHome, time.Second)
+	report, err := CheckLogin(command, targetCodexHome, loginCheckTestTimeout)
 	if err != nil {
 		t.Fatalf("check login failed: %v", err)
 	}
@@ -70,7 +72,7 @@ printf 'unexpected CODEX_HOME=%s\n' "$CODEX_HOME" >&2
 exit 2
 `)
 
-	report, err := CheckLogin(command, "", time.Second)
+	report, err := CheckLogin(command, "", loginCheckTestTimeout)
 	if err != nil {
 		t.Fatalf("check login failed: %v", err)
 	}

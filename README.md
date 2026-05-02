@@ -105,6 +105,38 @@ result, err := backend.Run(ctx, agentbridge.RunRequest{
 })
 ```
 
+## Interactive Steering
+
+For chat surfaces that receive new user input while an agent is still running,
+use `NewInteractiveProviderSession` instead of killing and relaunching the CLI.
+
+```go
+session, err := agentbridge.NewInteractiveProviderSession(agentbridge.FactoryConfig{
+    Provider: agentbridge.ProviderCodex,
+    Codex: agentbridge.CodexConfig{Command: "codex"},
+})
+if err != nil {
+    panic(err)
+}
+defer session.Close()
+
+_, _ = session.Submit(ctx, agentbridge.RunRequest{UserText: "Refactor this package"})
+
+// If the Codex turn is still active, this is delivered with turn/steer instead
+// of cancelling the running process.
+_, _ = session.Submit(ctx, agentbridge.RunRequest{UserText: "Keep the public API unchanged"})
+```
+
+Provider behavior:
+
+| Provider | Interactive transport | Busy-turn behavior |
+|----------|-----------------------|--------------------|
+| `codex`  | `codex app-server --listen stdio://` | Native steer via `turn/steer` |
+| `kimi`   | `kimi --wire --yolo` | Native steer via Wire `steer` |
+| `opencode` | `opencode serve` app-server API | Native enqueue via `session.prompt_async` |
+| `claude` | `claude -p --input-format stream-json` | Native enqueue via streaming stdin |
+| `gemini` | existing `gemini` wrapper | Queue until idle |
+
 ## Design
 
 **The library does not assemble prompts.** `RunRequest.UserText` is passed directly to the CLI. The caller is responsible for constructing the final prompt (system instructions, reply tokens, etc.) before calling `Run`.
@@ -151,6 +183,28 @@ agentbridge.ClaudeConfig{
     },
 }
 ```
+
+Interactive Claude sessions use `stream-json` by default. Set
+`DisableStreamJSON: true` only as an experimental rollback to the one-shot
+runner.
+
+### OpenCodeConfig
+
+```go
+agentbridge.OpenCodeConfig{
+    Command:      "opencode",
+    Timeout:      10 * time.Minute,
+    Model:        "anthropic/claude-sonnet-4-5",
+    Variant:      "max",
+    WorkspaceDir: "/path/to/project",
+    // Optional: connect to an existing `opencode serve` process.
+    ServerURL: "http://127.0.0.1:4096",
+}
+```
+
+Interactive OpenCode sessions start `opencode serve` by default and append
+busy-turn input with `session.prompt_async`. Set `DisableAppServer: true` only
+as an experimental rollback to the one-shot `opencode run` wrapper.
 
 ## License
 

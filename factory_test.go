@@ -85,6 +85,48 @@ func TestNewBackend_RejectsUnknownProvider(t *testing.T) {
 	}
 }
 
+func TestNewInteractiveProviderSession_SteerModes(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfg      agentbridge.FactoryConfig
+		wantMode agentbridge.SteerMode
+	}{
+		{
+			name:     "codex",
+			cfg:      agentbridge.FactoryConfig{Provider: agentbridge.ProviderCodex},
+			wantMode: agentbridge.SteerModeNative,
+		},
+		{
+			name:     "kimi",
+			cfg:      agentbridge.FactoryConfig{Provider: agentbridge.ProviderKimi},
+			wantMode: agentbridge.SteerModeNative,
+		},
+		{
+			name:     "opencode",
+			cfg:      agentbridge.FactoryConfig{Provider: agentbridge.ProviderOpenCode},
+			wantMode: agentbridge.SteerModeNativeEnqueue,
+		},
+		{
+			name:     "claude",
+			cfg:      agentbridge.FactoryConfig{Provider: agentbridge.ProviderClaude},
+			wantMode: agentbridge.SteerModeNativeEnqueue,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := agentbridge.NewInteractiveProviderSession(tt.cfg)
+			if err != nil {
+				t.Fatalf("NewInteractiveProviderSession failed: %v", err)
+			}
+			defer session.Close()
+			if got := session.SteerMode(); got != tt.wantMode {
+				t.Fatalf("SteerMode() = %q, want %q", got, tt.wantMode)
+			}
+		})
+	}
+}
+
 func TestNewProvider_CaseInsensitiveProvider(t *testing.T) {
 	for _, name := range []string{"Claude", "CLAUDE", "claude"} {
 		provider, err := agentbridge.NewProvider(agentbridge.FactoryConfig{

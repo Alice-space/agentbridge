@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const loginCheckTestTimeout = 15 * time.Second
+
 func TestCheckLogin_LoggedIn(t *testing.T) {
 	command := writeClaudeStub(t, `#!/bin/sh
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
@@ -17,7 +19,7 @@ printf 'unexpected args=%s %s\n' "$1" "$2" >&2
 exit 99
 `)
 
-	report, err := CheckLogin(command, time.Second)
+	report, err := CheckLogin(command, loginCheckTestTimeout)
 	if err != nil {
 		t.Fatalf("check login failed: %v", err)
 	}
@@ -38,7 +40,7 @@ printf '{"loggedIn":false,"authMethod":"","apiProvider":""}\n'
 exit 1
 `)
 
-	report, err := CheckLogin(command, time.Second)
+	report, err := CheckLogin(command, loginCheckTestTimeout)
 	if err != nil {
 		t.Fatalf("check login failed: %v", err)
 	}

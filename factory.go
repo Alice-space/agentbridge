@@ -7,10 +7,10 @@ import (
 )
 
 const (
-	ProviderCodex   = "codex"
-	ProviderClaude  = "claude"
-	ProviderGemini  = "gemini"
-	ProviderKimi    = "kimi"
+	ProviderCodex    = "codex"
+	ProviderClaude   = "claude"
+	ProviderGemini   = "gemini"
+	ProviderKimi     = "kimi"
 	ProviderOpenCode = "opencode"
 )
 
@@ -56,6 +56,9 @@ type ClaudeConfig struct {
 	Timeout      time.Duration
 	Env          map[string]string
 	WorkspaceDir string
+	// DisableStreamJSON makes NewInteractiveProviderSession fall back to the
+	// one-shot claude runner. It is intended for experimental rollback only.
+	DisableStreamJSON bool
 	// ProfileOverrides maps profile name → per-profile runner overrides.
 	ProfileOverrides map[string]ProfileRunnerConfig
 }
@@ -88,6 +91,12 @@ type OpenCodeConfig struct {
 	Variant      string
 	Env          map[string]string
 	WorkspaceDir string
+	// ServerURL connects to an already-running opencode server instead of
+	// spawning `opencode serve`.
+	ServerURL string
+	// DisableAppServer makes NewInteractiveProviderSession fall back to the
+	// one-shot `opencode run` wrapper. It is intended for experimental rollback.
+	DisableAppServer bool
 	// ProfileOverrides maps profile name → per-profile runner overrides.
 	ProfileOverrides map[string]ProfileRunnerConfig
 }
