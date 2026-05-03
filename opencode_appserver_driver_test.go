@@ -11,31 +11,19 @@ import (
 )
 
 func TestOpenCodeAppServerDriverNativeEnqueue(t *testing.T) {
-	messageStarted := make(chan struct{})
-	releaseMessage := make(chan struct{})
 	requests := make(chan string, 4)
+	eventPayloads := make(chan string, 8)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/event":
-			serveOpenCodeEventStream(w, r)
+			serveOpenCodeEventStream(w, r, eventPayloads)
 		case r.Method == http.MethodPost && r.URL.Path == "/session":
 			requests <- "create"
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "session-1"})
 		case r.Method == http.MethodPost && r.URL.Path == "/session/session-1/message":
 			requests <- "message"
-			close(messageStarted)
-			<-releaseMessage
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"info": map[string]any{
-					"tokens": map[string]any{
-						"input":  3,
-						"output": 5,
-						"cache":  map[string]any{"read": 1, "write": 0},
-					},
-				},
-				"parts": []map[string]any{{"type": "text", "text": "done"}},
-			})
+			_ = json.NewEncoder(w).Encode(map[string]any{"info": map[string]any{}, "parts": []any{}})
 		case r.Method == http.MethodPost && r.URL.Path == "/session/session-1/prompt_async":
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -61,7 +49,7 @@ func TestOpenCodeAppServerDriverNativeEnqueue(t *testing.T) {
 	if first.Mode != SubmitStarted {
 		t.Fatalf("first mode = %q, want %q", first.Mode, SubmitStarted)
 	}
-	<-messageStarted
+	waitForRequest(t, requests, "message")
 
 	second, err := session.Submit(context.Background(), RunRequest{UserText: "second"})
 	if err != nil {
@@ -72,8 +60,45 @@ func TestOpenCodeAppServerDriverNativeEnqueue(t *testing.T) {
 	}
 	waitForRequest(t, requests, "prompt_async")
 
-	close(releaseMessage)
-	waitForTurnEvent(t, session.Events(), TurnEventCompleted)
+	sendOpenCodeEvent(t, eventPayloads, map[string]any{
+		"type": "message.part.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"part": map[string]any{
+				"id":        "part-1",
+				"sessionID": "session-1",
+				"messageID": "msg-assistant",
+				"type":      "text",
+				"text":      "done",
+				"time":      map[string]any{"start": 1, "end": 2},
+			},
+		},
+	})
+	textEvent := waitForTurnEvent(t, session.Events(), TurnEventAssistantText)
+	if textEvent.Text != "done" {
+		t.Fatalf("assistant text = %q, want done", textEvent.Text)
+	}
+	sendOpenCodeEvent(t, eventPayloads, map[string]any{
+		"type": "message.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"info": map[string]any{
+				"id":        "msg-assistant",
+				"sessionID": "session-1",
+				"role":      "assistant",
+				"time":      map[string]any{"completed": 3},
+				"tokens": map[string]any{
+					"input":  3,
+					"output": 5,
+					"cache":  map[string]any{"read": 1, "write": 0},
+				},
+			},
+		},
+	})
+	completed := waitForTurnEvent(t, session.Events(), TurnEventCompleted)
+	if completed.Usage.InputTokens != 3 || completed.Usage.OutputTokens != 5 || completed.Usage.CachedInputTokens != 1 {
+		t.Fatalf("completion usage = %#v, want 3/5/1", completed.Usage)
+	}
 }
 
 func TestOpenCodeAppServerDriverInterruptUsesAbort(t *testing.T) {
@@ -84,7 +109,7 @@ func TestOpenCodeAppServerDriverInterruptUsesAbort(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/event":
-			serveOpenCodeEventStream(w, r)
+			serveOpenCodeEventStream(w, r, nil)
 		case r.Method == http.MethodPost && r.URL.Path == "/session/session-1/message":
 			close(messageStarted)
 			<-releaseMessage
@@ -122,12 +147,39 @@ func mustJSON(t *testing.T, value any) string {
 	return string(raw)
 }
 
-func serveOpenCodeEventStream(w http.ResponseWriter, r *http.Request) {
+func sendOpenCodeEvent(t *testing.T, ch chan<- string, event any) {
+	t.Helper()
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ch <- string(raw):
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out enqueueing opencode event")
+	}
+}
+
+func serveOpenCodeEventStream(w http.ResponseWriter, r *http.Request, events <-chan string) {
 	w.Header().Set("Content-Type", "text/event-stream")
-	if flusher, ok := w.(http.Flusher); ok {
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
 		flusher.Flush()
 	}
-	<-r.Context().Done()
+	for {
+		select {
+		case payload, ok := <-events:
+			if !ok {
+				return
+			}
+			_, _ = w.Write([]byte("data: " + payload + "\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 func waitForRequest(t *testing.T, ch <-chan string, want string) {

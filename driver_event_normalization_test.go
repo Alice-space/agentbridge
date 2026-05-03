@@ -232,6 +232,52 @@ func TestOpenCodeAppServerEventNormalizesAssistantTextAndToolUse(t *testing.T) {
 	if toolEvent.Kind != TurnEventToolUse || toolEvent.Text != "tool_use tool=`bash` call_id=`call-1` status=`completed` command=`pwd`" {
 		t.Fatalf("tool event = %#v, want tool_use detail", toolEvent)
 	}
+
+	completedEvent, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"info": map[string]any{
+				"id":        "msg-assistant",
+				"sessionID": "session-1",
+				"role":      "assistant",
+				"time":      map[string]any{"completed": 3},
+				"tokens": map[string]any{
+					"input":  7,
+					"output": 11,
+					"cache":  map[string]any{"read": 2, "write": 0},
+				},
+			},
+		},
+	}))
+	if !ok {
+		t.Fatal("assistant completed message event was suppressed")
+	}
+	if completedEvent.Kind != TurnEventCompleted || completedEvent.ThreadID != "session-1" || completedEvent.TurnID != "turn-1" {
+		t.Fatalf("completed event = %#v, want turn_completed for active turn", completedEvent)
+	}
+	if completedEvent.Usage.InputTokens != 7 || completedEvent.Usage.OutputTokens != 11 || completedEvent.Usage.CachedInputTokens != 2 {
+		t.Fatalf("completed usage = %#v, want 7/11/2", completedEvent.Usage)
+	}
+}
+
+func TestOpenCodeAppServerSessionIdleCompletesActiveTurn(t *testing.T) {
+	driver := newOpenCodeAppServerDriver(OpenCodeConfig{})
+	driver.sessionID = "session-1"
+	driver.activeID = "turn-1"
+
+	event, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "session.idle",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+		},
+	}))
+	if !ok {
+		t.Fatal("session idle event was suppressed")
+	}
+	if event.Kind != TurnEventCompleted || event.ThreadID != "session-1" || event.TurnID != "turn-1" {
+		t.Fatalf("event = %#v, want turn_completed for active session", event)
+	}
 }
 
 func TestKimiNotificationCoalescesContentParts(t *testing.T) {

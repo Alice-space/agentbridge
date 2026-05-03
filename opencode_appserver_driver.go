@@ -266,14 +266,16 @@ func (d *openCodeAppServerDriver) runPrompt(ctx context.Context, turn TurnRef, r
 		})
 		return
 	}
-	d.markOpenCodeTurnCompleted()
-	d.emit(TurnEvent{
-		Provider: ProviderOpenCode,
-		ThreadID: turn.ThreadID,
-		TurnID:   turn.TurnID,
-		Kind:     TurnEventCompleted,
-		Usage:    response.Info.Usage(),
-	})
+	if response.Info.Completed() {
+		d.markOpenCodeTurnCompleted()
+		d.emit(TurnEvent{
+			Provider: ProviderOpenCode,
+			ThreadID: turn.ThreadID,
+			TurnID:   turn.TurnID,
+			Kind:     TurnEventCompleted,
+			Usage:    response.Info.Usage(),
+		})
+	}
 }
 
 func (d *openCodeAppServerDriver) promptBody(req RunRequest) map[string]any {
@@ -432,7 +434,35 @@ func (d *openCodeAppServerDriver) parseOpenCodeEvent(payload string) (TurnEvent,
 		if !d.openCodeEventBelongsToActiveTurn(sessionID) {
 			return TurnEvent{}, false
 		}
-		d.recordOpenCodeMessageRole(stringFromMap(info, "id"), stringFromMap(info, "role"))
+		role := stringFromMap(info, "role")
+		d.recordOpenCodeMessageRole(stringFromMap(info, "id"), role)
+		if strings.ToLower(role) != "assistant" {
+			return TurnEvent{}, false
+		}
+		assistantInfo := openCodeAssistantInfoFromMap(info)
+		if assistantInfo.Error != nil {
+			d.markOpenCodeTurnCompleted()
+			return TurnEvent{
+				Provider: ProviderOpenCode,
+				ThreadID: sessionID,
+				TurnID:   d.currentTurnID(),
+				Kind:     TurnEventError,
+				Err:      fmt.Errorf("opencode turn failed: %s", assistantInfo.Message()),
+				Usage:    assistantInfo.Usage(),
+				Raw:      payload,
+			}, true
+		}
+		if assistantInfo.Completed() {
+			d.markOpenCodeTurnCompleted()
+			return TurnEvent{
+				Provider: ProviderOpenCode,
+				ThreadID: sessionID,
+				TurnID:   d.currentTurnID(),
+				Kind:     TurnEventCompleted,
+				Usage:    assistantInfo.Usage(),
+				Raw:      payload,
+			}, true
+		}
 		return TurnEvent{}, false
 	case "message.part.updated":
 		part, _ := properties["part"].(map[string]any)
@@ -471,6 +501,19 @@ func (d *openCodeAppServerDriver) parseOpenCodeEvent(payload string) (TurnEvent,
 		// OpenCode streams text chunks as deltas; wait for the completed
 		// message.part.updated text part so callers receive complete messages.
 		return TurnEvent{}, false
+	case "session.idle":
+		sessionID := stringFromMap(properties, "sessionID")
+		if !d.openCodeEventBelongsToActiveTurn(sessionID) {
+			return TurnEvent{}, false
+		}
+		d.markOpenCodeTurnCompleted()
+		return TurnEvent{
+			Provider: ProviderOpenCode,
+			ThreadID: sessionID,
+			TurnID:   d.currentTurnID(),
+			Kind:     TurnEventCompleted,
+			Raw:      payload,
+		}, true
 	}
 	return TurnEvent{}, false
 }
@@ -660,7 +703,10 @@ func (r openCodePromptResponse) Text() string {
 }
 
 type openCodeAssistantInfo struct {
-	Error  map[string]any `json:"error"`
+	Error map[string]any `json:"error"`
+	Time  struct {
+		Completed *float64 `json:"completed"`
+	} `json:"time"`
 	Tokens struct {
 		Input     int64 `json:"input"`
 		Output    int64 `json:"output"`
@@ -670,6 +716,23 @@ type openCodeAssistantInfo struct {
 			Write int64 `json:"write"`
 		} `json:"cache"`
 	} `json:"tokens"`
+}
+
+func openCodeAssistantInfoFromMap(info map[string]any) openCodeAssistantInfo {
+	var out openCodeAssistantInfo
+	if len(info) == 0 {
+		return out
+	}
+	raw, err := json.Marshal(info)
+	if err != nil {
+		return out
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out
+}
+
+func (i openCodeAssistantInfo) Completed() bool {
+	return i.Time.Completed != nil
 }
 
 func (i openCodeAssistantInfo) Usage() Usage {
