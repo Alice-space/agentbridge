@@ -233,6 +233,22 @@ func TestOpenCodeAppServerEventNormalizesAssistantTextAndToolUse(t *testing.T) {
 		t.Fatalf("tool event = %#v, want tool_use detail", toolEvent)
 	}
 
+	if event, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"info": map[string]any{
+				"id":        "msg-tool-calls",
+				"sessionID": "session-1",
+				"role":      "assistant",
+				"time":      map[string]any{"completed": 4},
+				"finish":    "tool-calls",
+			},
+		},
+	})); ok {
+		t.Fatalf("tool-calls assistant completion event = %#v, want suppressed", event)
+	}
+
 	completedEvent, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
 		"type": "message.updated",
 		"properties": map[string]any{
@@ -242,6 +258,7 @@ func TestOpenCodeAppServerEventNormalizesAssistantTextAndToolUse(t *testing.T) {
 				"sessionID": "session-1",
 				"role":      "assistant",
 				"time":      map[string]any{"completed": 3},
+				"finish":    "stop",
 				"tokens": map[string]any{
 					"input":  7,
 					"output": 11,
@@ -265,6 +282,33 @@ func TestOpenCodeAppServerSessionIdleCompletesActiveTurn(t *testing.T) {
 	driver := newOpenCodeAppServerDriver(OpenCodeConfig{})
 	driver.sessionID = "session-1"
 	driver.activeID = "turn-1"
+
+	if event, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "session.idle",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+		},
+	})); ok {
+		t.Fatalf("idle without assistant text event = %#v, want suppressed", event)
+	}
+
+	textEvent, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.part.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"part": map[string]any{
+				"id":        "part-1",
+				"sessionID": "session-1",
+				"messageID": "msg-assistant",
+				"type":      "text",
+				"text":      "done",
+				"time":      map[string]any{"start": 1, "end": 2},
+			},
+		},
+	}))
+	if !ok || textEvent.Kind != TurnEventAssistantText {
+		t.Fatalf("text event = %#v ok=%v, want assistant_text", textEvent, ok)
+	}
 
 	event, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
 		"type": "session.idle",

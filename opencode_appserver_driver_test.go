@@ -87,6 +87,7 @@ func TestOpenCodeAppServerDriverNativeEnqueue(t *testing.T) {
 				"sessionID": "session-1",
 				"role":      "assistant",
 				"time":      map[string]any{"completed": 3},
+				"finish":    "stop",
 				"tokens": map[string]any{
 					"input":  3,
 					"output": 5,

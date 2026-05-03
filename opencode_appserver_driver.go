@@ -452,7 +452,7 @@ func (d *openCodeAppServerDriver) parseOpenCodeEvent(payload string) (TurnEvent,
 				Raw:      payload,
 			}, true
 		}
-		if assistantInfo.Completed() {
+		if assistantInfo.TurnFinished() {
 			d.markOpenCodeTurnCompleted()
 			return TurnEvent{
 				Provider: ProviderOpenCode,
@@ -504,6 +504,9 @@ func (d *openCodeAppServerDriver) parseOpenCodeEvent(payload string) (TurnEvent,
 	case "session.idle":
 		sessionID := stringFromMap(properties, "sessionID")
 		if !d.openCodeEventBelongsToActiveTurn(sessionID) {
+			return TurnEvent{}, false
+		}
+		if !d.hasOpenCodeAssistantText() {
 			return TurnEvent{}, false
 		}
 		d.markOpenCodeTurnCompleted()
@@ -617,6 +620,12 @@ func (d *openCodeAppServerDriver) markOpenCodeTurnCompleted() {
 	d.mu.Unlock()
 }
 
+func (d *openCodeAppServerDriver) hasOpenCodeAssistantText() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return strings.TrimSpace(d.lastAssistantText) != ""
+}
+
 func (d *openCodeAppServerDriver) resetServerForNextRequest() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -707,6 +716,7 @@ type openCodeAssistantInfo struct {
 	Time  struct {
 		Completed *float64 `json:"completed"`
 	} `json:"time"`
+	Finish string `json:"finish"`
 	Tokens struct {
 		Input     int64 `json:"input"`
 		Output    int64 `json:"output"`
@@ -733,6 +743,18 @@ func openCodeAssistantInfoFromMap(info map[string]any) openCodeAssistantInfo {
 
 func (i openCodeAssistantInfo) Completed() bool {
 	return i.Time.Completed != nil
+}
+
+func (i openCodeAssistantInfo) TurnFinished() bool {
+	if !i.Completed() {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(i.Finish)) {
+	case "", "tool-calls", "unknown":
+		return false
+	default:
+		return true
+	}
 }
 
 func (i openCodeAssistantInfo) Usage() Usage {
