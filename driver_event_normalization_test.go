@@ -103,6 +103,40 @@ func TestOpenCodeAppServerEventNormalizesAssistantTextAndToolUse(t *testing.T) {
 		t.Fatalf("incomplete text part event = %#v, want suppressed", event)
 	}
 
+	if event, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"info": map[string]any{
+				"id":        "msg-user",
+				"sessionID": "session-1",
+				"role":      "user",
+			},
+		},
+	})); ok {
+		t.Fatalf("user message role event = %#v, want suppressed", event)
+	}
+	userTextEvent, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.part.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"part": map[string]any{
+				"id":        "part-user",
+				"sessionID": "session-1",
+				"messageID": "msg-user",
+				"type":      "text",
+				"text":      "user prompt should not be forwarded",
+				"time":      map[string]any{"start": 1, "end": 2},
+			},
+		},
+	}))
+	if !ok {
+		t.Fatal("user text part event was suppressed")
+	}
+	if userTextEvent.Kind != TurnEventUserText || userTextEvent.Text != "user prompt should not be forwarded" {
+		t.Fatalf("user text event = %#v, want user_text", userTextEvent)
+	}
+
 	textEvent, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
 		"type": "message.part.updated",
 		"properties": map[string]any{
@@ -139,6 +173,39 @@ func TestOpenCodeAppServerEventNormalizesAssistantTextAndToolUse(t *testing.T) {
 		},
 	})); ok {
 		t.Fatalf("duplicate text event = %#v, want suppressed", event)
+	}
+
+	if event, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"info": map[string]any{
+				"id":        "msg-assistant",
+				"sessionID": "session-1",
+				"role":      "assistant",
+			},
+		},
+	})); ok {
+		t.Fatalf("assistant message role event = %#v, want suppressed", event)
+	}
+	assistantRoleTextEvent, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.part.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"part": map[string]any{
+				"id":        "part-assistant",
+				"sessionID": "session-1",
+				"messageID": "msg-assistant",
+				"type":      "text",
+				"text":      "assistant role text",
+			},
+		},
+	}))
+	if !ok {
+		t.Fatal("assistant role text part event was suppressed")
+	}
+	if assistantRoleTextEvent.Kind != TurnEventAssistantText || assistantRoleTextEvent.Text != "assistant role text" {
+		t.Fatalf("assistant role text event = %#v, want assistant_text", assistantRoleTextEvent)
 	}
 
 	toolEvent, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{

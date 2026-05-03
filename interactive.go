@@ -32,6 +32,9 @@ const (
 	// TurnEventAssistantText contains a complete assistant message. Providers
 	// that stream chunks coalesce them before emitting this normalized event.
 	TurnEventAssistantText TurnEventKind = "assistant_text"
+	// TurnEventUserText contains user-authored text observed on a provider
+	// event stream.
+	TurnEventUserText      TurnEventKind = "user_text"
 	TurnEventReasoning     TurnEventKind = "reasoning"
 	TurnEventToolUse       TurnEventKind = "tool_use"
 	TurnEventFileChange    TurnEventKind = "file_change"

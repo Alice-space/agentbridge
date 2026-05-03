@@ -31,6 +31,7 @@ type openCodeAppServerDriver struct {
 	activeID          string
 	activeCompleted   bool
 	lastAssistantText string
+	messageRoles      map[string]string
 	closed            bool
 	eventCancel       context.CancelFunc
 	nextID            atomic.Uint64
@@ -39,9 +40,10 @@ type openCodeAppServerDriver struct {
 
 func newOpenCodeAppServerDriver(cfg OpenCodeConfig) *openCodeAppServerDriver {
 	return &openCodeAppServerDriver{
-		cfg:    cfg,
-		client: &http.Client{},
-		events: make(chan TurnEvent, 128),
+		cfg:          cfg,
+		client:       &http.Client{},
+		events:       make(chan TurnEvent, 128),
+		messageRoles: make(map[string]string),
 	}
 }
 
@@ -424,6 +426,14 @@ func (d *openCodeAppServerDriver) parseOpenCodeEvent(payload string) (TurnEvent,
 	}
 
 	switch eventType {
+	case "message.updated":
+		info, _ := properties["info"].(map[string]any)
+		sessionID := firstNonEmpty(stringFromMap(properties, "sessionID"), stringFromMap(info, "sessionID"))
+		if !d.openCodeEventBelongsToActiveTurn(sessionID) {
+			return TurnEvent{}, false
+		}
+		d.recordOpenCodeMessageRole(stringFromMap(info, "id"), stringFromMap(info, "role"))
+		return TurnEvent{}, false
 	case "message.part.updated":
 		part, _ := properties["part"].(map[string]any)
 		if len(part) == 0 {
@@ -443,7 +453,11 @@ func (d *openCodeAppServerDriver) parseOpenCodeEvent(payload string) (TurnEvent,
 			if text == "" || !openCodePartIsComplete(part) {
 				return TurnEvent{}, false
 			}
-			return d.openCodeAssistantTextEvent(sessionID, turnID, text, payload)
+			kind := TurnEventAssistantText
+			if d.openCodePartRole(properties, part) == "user" {
+				kind = TurnEventUserText
+			}
+			return d.openCodeTextEvent(sessionID, turnID, kind, text, payload)
 		case "reasoning":
 			text := stringFromMap(part, "text")
 			if text == "" {
@@ -503,19 +517,47 @@ func (d *openCodeAppServerDriver) openCodeEventBelongsToActiveTurn(sessionID str
 		sessionID == d.sessionID
 }
 
+func (d *openCodeAppServerDriver) recordOpenCodeMessageRole(messageID, role string) {
+	messageID = strings.TrimSpace(messageID)
+	role = strings.ToLower(strings.TrimSpace(role))
+	if messageID == "" || role == "" {
+		return
+	}
+	d.mu.Lock()
+	if d.messageRoles == nil {
+		d.messageRoles = make(map[string]string)
+	}
+	d.messageRoles[messageID] = role
+	d.mu.Unlock()
+}
+
+func (d *openCodeAppServerDriver) openCodePartRole(properties, part map[string]any) string {
+	messageID := firstNonEmpty(stringFromMap(part, "messageID"), stringFromMap(properties, "messageID"))
+	d.mu.Lock()
+	role := d.messageRoles[messageID]
+	d.mu.Unlock()
+	return role
+}
+
 func (d *openCodeAppServerDriver) openCodeAssistantTextEvent(sessionID, turnID, text, raw string) (TurnEvent, bool) {
+	return d.openCodeTextEvent(sessionID, turnID, TurnEventAssistantText, text, raw)
+}
+
+func (d *openCodeAppServerDriver) openCodeTextEvent(sessionID, turnID string, kind TurnEventKind, text, raw string) (TurnEvent, bool) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return TurnEvent{}, false
 	}
-	d.mu.Lock()
-	if d.lastAssistantText == text {
+	if kind == TurnEventAssistantText {
+		d.mu.Lock()
+		if d.lastAssistantText == text {
+			d.mu.Unlock()
+			return TurnEvent{}, false
+		}
+		d.lastAssistantText = text
 		d.mu.Unlock()
-		return TurnEvent{}, false
 	}
-	d.lastAssistantText = text
-	d.mu.Unlock()
-	return TurnEvent{Provider: ProviderOpenCode, ThreadID: sessionID, TurnID: turnID, Kind: TurnEventAssistantText, Text: text, Raw: raw}, true
+	return TurnEvent{Provider: ProviderOpenCode, ThreadID: sessionID, TurnID: turnID, Kind: kind, Text: text, Raw: raw}, true
 }
 
 func (d *openCodeAppServerDriver) emitOpenCodeAssistantText(sessionID, turnID, text, raw string) {
@@ -540,6 +582,7 @@ func (d *openCodeAppServerDriver) resetServerForNextRequest() {
 	d.activeID = ""
 	d.activeCompleted = false
 	d.lastAssistantText = ""
+	d.messageRoles = make(map[string]string)
 	if d.eventCancel != nil {
 		d.eventCancel()
 		d.eventCancel = nil
