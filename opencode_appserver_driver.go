@@ -276,7 +276,13 @@ func (d *openCodeAppServerDriver) promptBody(req RunRequest) map[string]any {
 		body["variant"] = variant
 	}
 	if agent := strings.TrimSpace(req.Profile); agent != "" {
-		body["agent"] = agent
+		resolvedAgent := agent
+		if override, ok := d.cfg.ProfileOverrides[agent]; ok && strings.TrimSpace(override.ProviderProfile) != "" {
+			resolvedAgent = strings.TrimSpace(override.ProviderProfile)
+		}
+		if isKnownOpenCodeAgent(resolvedAgent) {
+			body["agent"] = resolvedAgent
+		}
 	}
 	return body
 }
@@ -319,7 +325,14 @@ func (d *openCodeAppServerDriver) postJSON(ctx context.Context, path string, bod
 		return nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("decode opencode app-server response failed: %w", err)
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			d.resetServerForNextRequest()
+		}
+		msg := fmt.Sprintf("decode opencode app-server %s response failed: %v", path, err)
+		if stderr := strings.TrimSpace(d.stderr.String()); stderr != "" {
+			msg += " (server stderr: " + stderr + ")"
+		}
+		return errors.New(msg)
 	}
 	return nil
 }
@@ -347,6 +360,19 @@ func (d *openCodeAppServerDriver) currentSessionID() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.sessionID
+}
+
+func (d *openCodeAppServerDriver) resetServerForNextRequest() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.baseURL = ""
+	d.sessionID = ""
+	d.activeID = ""
+	if d.cmd != nil && d.cmd.Process != nil {
+		_ = d.cmd.Process.Kill()
+		_ = d.cmd.Wait()
+	}
+	d.cmd = nil
 }
 
 func (d *openCodeAppServerDriver) emit(event TurnEvent) {
@@ -443,4 +469,15 @@ func extractHTTPURL(line string) string {
 		}
 	}
 	return ""
+}
+
+var knownOpenCodeAgents = map[string]bool{
+	"build":    true,
+	"explore":  true,
+	"general":  true,
+	"plan":     true,
+}
+
+func isKnownOpenCodeAgent(agent string) bool {
+	return knownOpenCodeAgents[strings.ToLower(strings.TrimSpace(agent))]
 }
