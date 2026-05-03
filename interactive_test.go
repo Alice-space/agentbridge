@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -28,11 +29,12 @@ func TestInteractiveSession_NativeSteer(t *testing.T) {
 	if second.Mode != SubmitSteered {
 		t.Fatalf("second mode = %q, want %q", second.Mode, SubmitSteered)
 	}
-	if len(driver.steered) != 1 || driver.steered[0] != "second" {
-		t.Fatalf("steered = %#v, want second", driver.steered)
+	started, _, steered := driver.snapshot()
+	if len(steered) != 1 || steered[0] != "second" {
+		t.Fatalf("steered = %#v, want second", steered)
 	}
-	if len(driver.started) != 1 {
-		t.Fatalf("started = %#v, want only first start", driver.started)
+	if len(started) != 1 {
+		t.Fatalf("started = %#v, want only first start", started)
 	}
 }
 
@@ -56,11 +58,12 @@ func TestInteractiveSession_NativeEnqueue(t *testing.T) {
 	if second.Mode != SubmitSteered {
 		t.Fatalf("second mode = %q, want %q", second.Mode, SubmitSteered)
 	}
-	if len(driver.steered) != 1 || driver.steered[0] != "second" {
-		t.Fatalf("steered = %#v, want second", driver.steered)
+	started, _, steered := driver.snapshot()
+	if len(steered) != 1 || steered[0] != "second" {
+		t.Fatalf("steered = %#v, want second", steered)
 	}
-	if len(driver.started) != 1 {
-		t.Fatalf("started = %#v, want only first start", driver.started)
+	if len(started) != 1 {
+		t.Fatalf("started = %#v, want only first start", started)
 	}
 }
 
@@ -84,19 +87,22 @@ func TestInteractiveSession_QueueWhenBusy(t *testing.T) {
 	if second.Mode != SubmitQueued || second.QueueDepth != 1 {
 		t.Fatalf("second result = %#v, want queued depth 1", second)
 	}
-	if len(driver.steered) != 0 {
-		t.Fatalf("steered = %#v, want none", driver.steered)
+	_, _, steered := driver.snapshot()
+	if len(steered) != 0 {
+		t.Fatalf("steered = %#v, want none", steered)
 	}
 
 	driver.emit(TurnEvent{Kind: TurnEventCompleted, ThreadID: "thread_after_first", TurnID: first.TurnID})
 	waitFor(t, time.Second, func() bool {
-		return len(driver.started) == 2
+		started, _, _ := driver.snapshot()
+		return len(started) == 2
 	}, "queued turn should start")
-	if driver.started[1] != "second" {
-		t.Fatalf("second started prompt = %q", driver.started[1])
+	started, startedThreadIDs, _ := driver.snapshot()
+	if started[1] != "second" {
+		t.Fatalf("second started prompt = %q", started[1])
 	}
-	if driver.startedThreadIDs[1] != "thread_after_first" {
-		t.Fatalf("second started thread id = %q, want completed thread id", driver.startedThreadIDs[1])
+	if startedThreadIDs[1] != "thread_after_first" {
+		t.Fatalf("second started thread id = %q, want completed thread id", startedThreadIDs[1])
 	}
 }
 
@@ -112,6 +118,7 @@ func TestInteractiveSession_SteerWithoutActiveTurn(t *testing.T) {
 }
 
 type fakeInteractiveDriver struct {
+	mu               sync.Mutex
 	mode             SteerMode
 	events           chan TurnEvent
 	nextID           int
@@ -129,6 +136,8 @@ func (d *fakeInteractiveDriver) SteerMode() SteerMode {
 }
 
 func (d *fakeInteractiveDriver) StartTurn(_ context.Context, req RunRequest) (TurnRef, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.nextID++
 	d.started = append(d.started, req.UserText)
 	d.startedThreadIDs = append(d.startedThreadIDs, strings.TrimSpace(req.ThreadID))
@@ -136,6 +145,8 @@ func (d *fakeInteractiveDriver) StartTurn(_ context.Context, req RunRequest) (Tu
 }
 
 func (d *fakeInteractiveDriver) SteerTurn(_ context.Context, _ TurnRef, req RunRequest) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.steered = append(d.steered, req.UserText)
 	return nil
 }
@@ -155,6 +166,12 @@ func (d *fakeInteractiveDriver) Close() error {
 
 func (d *fakeInteractiveDriver) emit(event TurnEvent) {
 	d.events <- event
+}
+
+func (d *fakeInteractiveDriver) snapshot() (started []string, startedThreadIDs []string, steered []string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.started...), append([]string(nil), d.startedThreadIDs...), append([]string(nil), d.steered...)
 }
 
 func waitFor(t *testing.T, timeout time.Duration, ok func() bool, message string) {

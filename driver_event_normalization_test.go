@@ -30,6 +30,143 @@ func TestCodexNotificationSuppressesAgentMessageDeltas(t *testing.T) {
 	}
 }
 
+func TestCodexNotificationNormalizesToolCallsSeparately(t *testing.T) {
+	event, ok := parseCodexNotification(testRPCNotification(t, "item/completed", map[string]any{
+		"threadId": "thread",
+		"turnId":   "turn",
+		"item": map[string]any{
+			"type":    "commandExecution",
+			"command": "pwd",
+		},
+	}))
+	if !ok {
+		t.Fatal("commandExecution event was suppressed")
+	}
+	if event.Kind != TurnEventToolUse || event.Text != "pwd" {
+		t.Fatalf("event = %#v, want tool_use pwd", event)
+	}
+}
+
+func TestClaudeStreamDriverNormalizesAssistantTextAndToolUse(t *testing.T) {
+	driver := newClaudeStreamDriver(ClaudeConfig{})
+	driver.activeID = "turn"
+
+	textEvent, ok := driver.parseClaudeLine(`{"type":"assistant","session_id":"claude-session","message":{"role":"assistant","content":[{"type":"text","text":"middle"}]}}`)
+	if !ok {
+		t.Fatal("assistant text event was suppressed")
+	}
+	if textEvent.Kind != TurnEventAssistantText || textEvent.Text != "middle" {
+		t.Fatalf("text event = %#v, want assistant_text middle", textEvent)
+	}
+
+	toolEvent, ok := driver.parseClaudeLine(`{"type":"assistant","session_id":"claude-session","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"toolu_1","input":{"command":"pwd"}}]}}`)
+	if !ok {
+		t.Fatal("tool_use event was suppressed")
+	}
+	if toolEvent.Kind != TurnEventToolUse || toolEvent.Text != "tool_use name=`Bash` id=`toolu_1`" {
+		t.Fatalf("tool event = %#v, want tool_use detail", toolEvent)
+	}
+}
+
+func TestOpenCodeAppServerEventNormalizesAssistantTextAndToolUse(t *testing.T) {
+	driver := newOpenCodeAppServerDriver(OpenCodeConfig{})
+	driver.sessionID = "session-1"
+	driver.activeID = "turn-1"
+
+	if event, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.part.delta",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"messageID": "msg-1",
+			"partID":    "part-1",
+			"field":     "text",
+			"delta":     "hel",
+		},
+	})); ok {
+		t.Fatalf("delta event = %#v, want suppressed", event)
+	}
+
+	if event, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.part.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"part": map[string]any{
+				"id":        "part-1",
+				"sessionID": "session-1",
+				"messageID": "msg-1",
+				"type":      "text",
+				"text":      "middle",
+				"time":      map[string]any{"start": 1},
+			},
+		},
+	})); ok {
+		t.Fatalf("incomplete text part event = %#v, want suppressed", event)
+	}
+
+	textEvent, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.part.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"part": map[string]any{
+				"id":        "part-1",
+				"sessionID": "session-1",
+				"messageID": "msg-1",
+				"type":      "text",
+				"text":      "middle",
+				"time":      map[string]any{"start": 1, "end": 2},
+			},
+		},
+	}))
+	if !ok {
+		t.Fatal("completed text part event was suppressed")
+	}
+	if textEvent.Kind != TurnEventAssistantText || textEvent.Text != "middle" {
+		t.Fatalf("text event = %#v, want assistant_text middle", textEvent)
+	}
+
+	if event, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.part.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"part": map[string]any{
+				"id":        "part-1",
+				"sessionID": "session-1",
+				"messageID": "msg-1",
+				"type":      "text",
+				"text":      "middle",
+				"time":      map[string]any{"start": 1, "end": 2},
+			},
+		},
+	})); ok {
+		t.Fatalf("duplicate text event = %#v, want suppressed", event)
+	}
+
+	toolEvent, ok := driver.parseOpenCodeEvent(mustJSON(t, map[string]any{
+		"type": "message.part.updated",
+		"properties": map[string]any{
+			"sessionID": "session-1",
+			"part": map[string]any{
+				"id":        "part-2",
+				"sessionID": "session-1",
+				"messageID": "msg-1",
+				"type":      "tool",
+				"tool":      "bash",
+				"callID":    "call-1",
+				"state": map[string]any{
+					"status": "completed",
+					"input":  map[string]any{"command": "pwd"},
+				},
+			},
+		},
+	}))
+	if !ok {
+		t.Fatal("tool part event was suppressed")
+	}
+	if toolEvent.Kind != TurnEventToolUse || toolEvent.Text != "tool_use tool=`bash` call_id=`call-1` status=`completed` command=`pwd`" {
+		t.Fatalf("tool event = %#v, want tool_use detail", toolEvent)
+	}
+}
+
 func TestKimiNotificationCoalescesContentParts(t *testing.T) {
 	driver := newKimiWireDriver(KimiConfig{})
 	driver.threadID = "thread"

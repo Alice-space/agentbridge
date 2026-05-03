@@ -25,13 +25,16 @@ type openCodeAppServerDriver struct {
 	cmd    *exec.Cmd
 	stderr bytes.Buffer
 
-	mu        sync.Mutex
-	baseURL   string
-	sessionID string
-	activeID  string
-	closed    bool
-	nextID    atomic.Uint64
-	closeOnce sync.Once
+	mu                sync.Mutex
+	baseURL           string
+	sessionID         string
+	activeID          string
+	activeCompleted   bool
+	lastAssistantText string
+	closed            bool
+	eventCancel       context.CancelFunc
+	nextID            atomic.Uint64
+	closeOnce         sync.Once
 }
 
 func newOpenCodeAppServerDriver(cfg OpenCodeConfig) *openCodeAppServerDriver {
@@ -57,6 +60,8 @@ func (d *openCodeAppServerDriver) StartTurn(ctx context.Context, req RunRequest)
 	turnID := "opencode-" + fmt.Sprint(d.nextID.Add(1))
 	d.mu.Lock()
 	d.activeID = turnID
+	d.activeCompleted = false
+	d.lastAssistantText = ""
 	d.mu.Unlock()
 
 	turn := TurnRef{ThreadID: sessionID, TurnID: turnID}
@@ -102,10 +107,15 @@ func (d *openCodeAppServerDriver) Close() error {
 		d.closed = true
 		cmd := d.cmd
 		d.cmd = nil
+		cancelEvents := d.eventCancel
+		d.eventCancel = nil
 		d.mu.Unlock()
 		if cmd != nil && cmd.Process != nil {
 			_ = cmd.Process.Kill()
 			err = cmd.Wait()
+		}
+		if cancelEvents != nil {
+			cancelEvents()
 		}
 		close(d.events)
 	})
@@ -125,6 +135,7 @@ func (d *openCodeAppServerDriver) ensureServer(ctx context.Context, req RunReque
 	if serverURL := strings.TrimSpace(d.cfg.ServerURL); serverURL != "" {
 		d.baseURL = strings.TrimRight(serverURL, "/")
 		d.mu.Unlock()
+		d.ensureEventStream()
 		return nil
 	}
 	d.mu.Unlock()
@@ -173,6 +184,7 @@ func (d *openCodeAppServerDriver) ensureServer(ctx context.Context, req RunReque
 		d.cmd = cmd
 		d.baseURL = strings.TrimRight(serverURL, "/")
 		d.mu.Unlock()
+		d.ensureEventStream()
 		return nil
 	case <-ctx.Done():
 		_ = cmd.Process.Kill()
@@ -233,13 +245,15 @@ func (d *openCodeAppServerDriver) runPrompt(ctx context.Context, turn TurnRef, r
 		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			kind = TurnEventInterrupted
 		}
+		d.markOpenCodeTurnCompleted()
 		d.emit(TurnEvent{Provider: ProviderOpenCode, ThreadID: turn.ThreadID, TurnID: turn.TurnID, Kind: kind, Err: err})
 		return
 	}
 	if text := strings.TrimSpace(response.Text()); text != "" {
-		d.emit(TurnEvent{Provider: ProviderOpenCode, ThreadID: turn.ThreadID, TurnID: turn.TurnID, Kind: TurnEventAssistantText, Text: text})
+		d.emitOpenCodeAssistantText(turn.ThreadID, turn.TurnID, text, "")
 	}
 	if response.Info.Error != nil {
+		d.markOpenCodeTurnCompleted()
 		d.emit(TurnEvent{
 			Provider: ProviderOpenCode,
 			ThreadID: turn.ThreadID,
@@ -250,6 +264,7 @@ func (d *openCodeAppServerDriver) runPrompt(ctx context.Context, turn TurnRef, r
 		})
 		return
 	}
+	d.markOpenCodeTurnCompleted()
 	d.emit(TurnEvent{
 		Provider: ProviderOpenCode,
 		ThreadID: turn.ThreadID,
@@ -337,6 +352,115 @@ func (d *openCodeAppServerDriver) postJSON(ctx context.Context, path string, bod
 	return nil
 }
 
+func (d *openCodeAppServerDriver) ensureEventStream() {
+	d.mu.Lock()
+	if d.closed || d.eventCancel != nil || d.baseURL == "" {
+		d.mu.Unlock()
+		return
+	}
+	baseURL := d.baseURL
+	ctx, cancel := context.WithCancel(context.Background())
+	d.eventCancel = cancel
+	d.mu.Unlock()
+
+	go d.readEventStream(ctx, strings.TrimRight(baseURL, "/")+"/event")
+}
+
+func (d *openCodeAppServerDriver) readEventStream(ctx context.Context, endpoint string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return
+	}
+	d.scanEventStream(resp.Body)
+}
+
+func (d *openCodeAppServerDriver) scanEventStream(reader io.Reader) {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+	var data []string
+	flush := func() {
+		if len(data) == 0 {
+			return
+		}
+		payload := strings.Join(data, "\n")
+		data = data[:0]
+		event, ok := d.parseOpenCodeEvent(payload)
+		if !ok {
+			return
+		}
+		d.emit(event)
+	}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			flush()
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "data:"); ok {
+			data = append(data, strings.TrimPrefix(value, " "))
+		}
+	}
+	flush()
+}
+
+func (d *openCodeAppServerDriver) parseOpenCodeEvent(payload string) (TurnEvent, bool) {
+	var event map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(payload)), &event); err != nil {
+		return TurnEvent{}, false
+	}
+	eventType := stringFromMap(event, "type")
+	properties, _ := event["properties"].(map[string]any)
+	if len(properties) == 0 {
+		return TurnEvent{}, false
+	}
+
+	switch eventType {
+	case "message.part.updated":
+		part, _ := properties["part"].(map[string]any)
+		if len(part) == 0 {
+			return TurnEvent{}, false
+		}
+		sessionID := firstNonEmpty(stringFromMap(properties, "sessionID"), stringFromMap(part, "sessionID"))
+		if !d.openCodeEventBelongsToActiveTurn(sessionID) {
+			return TurnEvent{}, false
+		}
+		turnID := d.currentTurnID()
+		switch stringFromMap(part, "type") {
+		case "text":
+			if boolFromAny(part["ignored"]) {
+				return TurnEvent{}, false
+			}
+			text := stringFromMap(part, "text")
+			if text == "" || !openCodePartIsComplete(part) {
+				return TurnEvent{}, false
+			}
+			return d.openCodeAssistantTextEvent(sessionID, turnID, text, payload)
+		case "reasoning":
+			text := stringFromMap(part, "text")
+			if text == "" {
+				return TurnEvent{}, false
+			}
+			return TurnEvent{Provider: ProviderOpenCode, ThreadID: sessionID, TurnID: turnID, Kind: TurnEventReasoning, Text: text, Raw: payload}, true
+		case "tool":
+			return TurnEvent{Provider: ProviderOpenCode, ThreadID: sessionID, TurnID: turnID, Kind: TurnEventToolUse, Text: formatOpenCodeAppServerToolUse(part), Raw: payload}, true
+		}
+	case "message.part.delta":
+		// OpenCode streams text chunks as deltas; wait for the completed
+		// message.part.updated text part so callers receive complete messages.
+		return TurnEvent{}, false
+	}
+	return TurnEvent{}, false
+}
+
 func (d *openCodeAppServerDriver) endpoint(path string, req RunRequest) (string, error) {
 	d.mu.Lock()
 	base := d.baseURL
@@ -362,12 +486,64 @@ func (d *openCodeAppServerDriver) currentSessionID() string {
 	return d.sessionID
 }
 
+func (d *openCodeAppServerDriver) currentTurnID() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.activeID
+}
+
+func (d *openCodeAppServerDriver) openCodeEventBelongsToActiveTurn(sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return !d.closed &&
+		!d.activeCompleted &&
+		d.activeID != "" &&
+		sessionID != "" &&
+		sessionID == d.sessionID
+}
+
+func (d *openCodeAppServerDriver) openCodeAssistantTextEvent(sessionID, turnID, text, raw string) (TurnEvent, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return TurnEvent{}, false
+	}
+	d.mu.Lock()
+	if d.lastAssistantText == text {
+		d.mu.Unlock()
+		return TurnEvent{}, false
+	}
+	d.lastAssistantText = text
+	d.mu.Unlock()
+	return TurnEvent{Provider: ProviderOpenCode, ThreadID: sessionID, TurnID: turnID, Kind: TurnEventAssistantText, Text: text, Raw: raw}, true
+}
+
+func (d *openCodeAppServerDriver) emitOpenCodeAssistantText(sessionID, turnID, text, raw string) {
+	event, ok := d.openCodeAssistantTextEvent(sessionID, turnID, text, raw)
+	if !ok {
+		return
+	}
+	d.emit(event)
+}
+
+func (d *openCodeAppServerDriver) markOpenCodeTurnCompleted() {
+	d.mu.Lock()
+	d.activeCompleted = true
+	d.mu.Unlock()
+}
+
 func (d *openCodeAppServerDriver) resetServerForNextRequest() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.baseURL = ""
 	d.sessionID = ""
 	d.activeID = ""
+	d.activeCompleted = false
+	d.lastAssistantText = ""
+	if d.eventCancel != nil {
+		d.eventCancel()
+		d.eventCancel = nil
+	}
 	if d.cmd != nil && d.cmd.Process != nil {
 		_ = d.cmd.Process.Kill()
 		_ = d.cmd.Wait()
@@ -386,6 +562,37 @@ func (d *openCodeAppServerDriver) emit(event TurnEvent) {
 	case d.events <- event:
 	default:
 	}
+}
+
+func openCodePartIsComplete(part map[string]any) bool {
+	timePayload, _ := part["time"].(map[string]any)
+	if len(timePayload) == 0 {
+		return true
+	}
+	_, ok := timePayload["end"]
+	return ok
+}
+
+func formatOpenCodeAppServerToolUse(part map[string]any) string {
+	if len(part) == 0 {
+		return "tool_use"
+	}
+	state, _ := part["state"].(map[string]any)
+	input, _ := state["input"].(map[string]any)
+	parts := []string{"tool_use"}
+	if tool := stringFromMap(part, "tool"); tool != "" {
+		parts = append(parts, "tool=`"+tool+"`")
+	}
+	if callID := stringFromMap(part, "callID"); callID != "" {
+		parts = append(parts, "call_id=`"+callID+"`")
+	}
+	if status := stringFromMap(state, "status"); status != "" {
+		parts = append(parts, "status=`"+status+"`")
+	}
+	if command := stringFromMap(input, "command"); command != "" {
+		parts = append(parts, "command=`"+command+"`")
+	}
+	return strings.Join(parts, " ")
 }
 
 type openCodePromptResponse struct {
@@ -472,10 +679,10 @@ func extractHTTPURL(line string) string {
 }
 
 var knownOpenCodeAgents = map[string]bool{
-	"build":    true,
-	"explore":  true,
-	"general":  true,
-	"plan":     true,
+	"build":   true,
+	"explore": true,
+	"general": true,
+	"plan":    true,
 }
 
 func isKnownOpenCodeAgent(agent string) bool {

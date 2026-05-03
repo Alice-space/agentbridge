@@ -17,6 +17,8 @@ func TestOpenCodeAppServerDriverNativeEnqueue(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/event":
+			serveOpenCodeEventStream(w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/session":
 			requests <- "create"
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "session-1"})
@@ -81,6 +83,8 @@ func TestOpenCodeAppServerDriverInterruptUsesAbort(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/event":
+			serveOpenCodeEventStream(w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/session/session-1/message":
 			close(messageStarted)
 			<-releaseMessage
@@ -116,6 +120,14 @@ func mustJSON(t *testing.T, value any) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+func serveOpenCodeEventStream(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	<-r.Context().Done()
 }
 
 func waitForRequest(t *testing.T, ch <-chan string, want string) {
