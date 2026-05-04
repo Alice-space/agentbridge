@@ -233,6 +233,7 @@ func formatOpenCodeToolUse(part map[string]any) string {
 	}
 	state, _ := part["state"].(map[string]any)
 	input, _ := state["input"].(map[string]any)
+	metadata, _ := state["metadata"].(map[string]any)
 	parts := []string{"tool_use"}
 	if tool := strings.TrimSpace(extractOpenCodeString(part, "tool")); tool != "" {
 		parts = append(parts, "tool=`"+tool+"`")
@@ -245,6 +246,16 @@ func formatOpenCodeToolUse(part map[string]any) string {
 	}
 	if command := strings.TrimSpace(extractOpenCodeString(input, "command")); command != "" {
 		parts = append(parts, "command=`"+command+"`")
+	}
+	desc := strings.TrimSpace(extractOpenCodeString(input, "description"))
+	if desc == "" {
+		desc = strings.TrimSpace(extractOpenCodeString(metadata, "description"))
+	}
+	if desc != "" {
+		parts = append(parts, "description=`"+desc+"`")
+	}
+	if title := strings.TrimSpace(extractOpenCodeString(state, "title")); title != "" {
+		parts = append(parts, "title=`"+title+"`")
 	}
 	return strings.Join(parts, " ")
 }

@@ -674,6 +674,7 @@ func formatOpenCodeAppServerToolUse(part map[string]any) string {
 	}
 	state, _ := part["state"].(map[string]any)
 	input, _ := state["input"].(map[string]any)
+	metadata, _ := state["metadata"].(map[string]any)
 	parts := []string{"tool_use"}
 	if tool := stringFromMap(part, "tool"); tool != "" {
 		parts = append(parts, "tool=`"+tool+"`")
@@ -686,6 +687,16 @@ func formatOpenCodeAppServerToolUse(part map[string]any) string {
 	}
 	if command := stringFromMap(input, "command"); command != "" {
 		parts = append(parts, "command=`"+command+"`")
+	}
+	desc := strings.TrimSpace(stringFromMap(input, "description"))
+	if desc == "" {
+		desc = strings.TrimSpace(stringFromMap(metadata, "description"))
+	}
+	if desc != "" {
+		parts = append(parts, "description=`"+desc+"`")
+	}
+	if title := stringFromMap(state, "title"); title != "" {
+		parts = append(parts, "title=`"+title+"`")
 	}
 	return strings.Join(parts, " ")
 }
